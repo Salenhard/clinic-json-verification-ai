@@ -3,3 +3,4 @@ gunicorn==22.0.0
 flask-cors==4.0.0
 google-genai>=1.0.0
 python-dotenv==1.0.1
+pdflumber>=1.0.0
