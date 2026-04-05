@@ -251,12 +251,6 @@ class BasePipelineStage(ABC):
         )
         return merged
 
-    # ── Abstract interface ────────────────────────────────────────────────────
-
-    @abstractmethod
-    def parse_response(self, response_text: str) -> dict:
-        pass
-
     @abstractmethod
     def run(self, *args, **kwargs) -> dict:
         pass
