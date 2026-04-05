@@ -25,6 +25,13 @@ class BasePipelineStage(ABC):
     RATE_LIMIT_BACKOFF = 65
     MAX_OUTPUT_TOKENS = 32768
 
+    # FIX: removed graph-specific wording — this is now a generic validator
+    _SYSTEM_INSTRUCTION = (
+        "Ты эксперт по клиническим рекомендациям и медицинским стандартам. "
+        "Отвечай только валидным JSON без лишних пояснений и markdown-разметки. "
+        "Используй только сведения из предоставленного текста — не придумывай данные."
+    )
+
     def __init__(
         self,
         client,
@@ -42,34 +49,26 @@ class BasePipelineStage(ABC):
         text = re.sub(r"```(?:json)?\s*", "", text)
         text = re.sub(r"```\s*", "", text)
         text = text.strip()
-        start = text.find("{")
-        if start == -1:
-            start = text.find("[")
+        start_brace = text.find("{")
+        start_arr = text.find("[")
+        if start_brace == -1 and start_arr == -1:
+            return text
+        if start_brace == -1:
+            start = start_arr
+        elif start_arr == -1:
+            start = start_brace
+        else:
+            start = min(start_brace, start_arr)
         end = text.rfind("}")
         end_arr = text.rfind("]")
-        if start == -1:
-            return text
         if end == -1 and end_arr == -1:
             return text[start:]
-        if end == -1:
-            return text[start:end_arr + 1]
-        if end_arr == -1:
-            return text[start:end + 1]
-        return text[start:max(end, end_arr) + 1]
+        return text[start: max(end, end_arr) + 1]
 
-    # ── Single LLM call ───────────────────────────────────────────────────────
-
-    # Default system instruction injected in every LLM call
-    _SYSTEM_INSTRUCTION = (
-        "Ты эксперт по клинической хирургии и медицинским алгоритмам принятия решений. "
-        "Ты помогаешь строить формализованные графы клинических рекомендаций по травматологии. "
-        "Отвечай только валидным JSON без лишних пояснений. "
-        "Используй только сведения из предоставленного текста — не придумывай данные."
-    )
+    # ── LLM call ──────────────────────────────────────────────────────────────
 
     def _call_llm(self, prompt: str, system: Optional[str] = None) -> str:
         self._limiter.acquire()
-
         sys_instr = system if system else self._SYSTEM_INSTRUCTION
         config = genai_types.GenerateContentConfig(
             temperature=0.1,
@@ -78,22 +77,15 @@ class BasePipelineStage(ABC):
         )
         try:
             response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=config,
+                model=self.model, contents=prompt, config=config,
             )
         except Exception as exc:
-            exc_str = str(exc).lower()
-            if "429" in exc_str or "resource_exhausted" in exc_str or "quota" in exc_str:
-                logger.warning(
-                    f"{self.stage_name}: quota exceeded — "
-                    f"backing off {self.RATE_LIMIT_BACKOFF}s ..."
-                )
+            s = str(exc).lower()
+            if "429" in s or "resource_exhausted" in s or "quota" in s:
+                logger.warning("%s: quota — backing off %ds", self.stage_name, self.RATE_LIMIT_BACKOFF)
                 time.sleep(self.RATE_LIMIT_BACKOFF)
                 response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=config,
+                    model=self.model, contents=prompt, config=config,
                 )
             else:
                 raise
@@ -102,64 +94,12 @@ class BasePipelineStage(ABC):
         if meta:
             self.tokens_used += getattr(meta, "prompt_token_count", 0)
             self.tokens_used += getattr(meta, "candidates_token_count", 0)
-
-        return response.text
-
-    def _call_llm_multimodal(
-        self,
-        contents: list,
-        system: str | None = None,
-        max_tokens: int = 4096,
-    ) -> str:
-        """Call Gemini with multimodal content (text + images).
-
-        Parameters
-        ----------
-        contents : list of genai_types.Part objects (images + text)
-        system   : system instruction override
-        """
-        import time
-        self._limiter.acquire()
-
-        sys_instr = system if system else self._SYSTEM_INSTRUCTION
-        config = genai_types.GenerateContentConfig(
-            temperature=0.1,
-            max_output_tokens=max_tokens,
-            system_instruction=sys_instr,
-        )
-        try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=config,
-            )
-        except Exception as exc:
-            exc_str = str(exc).lower()
-            if "429" in exc_str or "resource_exhausted" in exc_str or "quota" in exc_str:
-                logger.warning(
-                    f"{self.stage_name}: quota exceeded — "
-                    f"backing off {self.RATE_LIMIT_BACKOFF}s ..."
-                )
-                time.sleep(self.RATE_LIMIT_BACKOFF)
-                response = self.client.models.generate_content(
-                    model=self.model,
-                    contents=contents,
-                    config=config,
-                )
-            else:
-                raise
-
-        meta = getattr(response, "usage_metadata", None)
-        if meta:
-            self.tokens_used += getattr(meta, "prompt_token_count", 0)
-            self.tokens_used += getattr(meta, "candidates_token_count", 0)
-
         return response.text
 
     # ── JSON repair ───────────────────────────────────────────────────────────
 
     def _repair_json(self, broken_text: str) -> dict:
-        logger.warning(f"{self.stage_name}: attempting JSON repair")
+        logger.warning("%s: attempting JSON repair", self.stage_name)
         fixed = self._call_llm(
             "The following text should be valid JSON but has syntax errors. "
             "Fix it and return ONLY valid JSON, no explanations, no markdown:\n\n"
@@ -175,9 +115,9 @@ class BasePipelineStage(ABC):
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
                 raw = self._call_llm(prompt)
-                return self.parse_response(raw)
+                return json.loads(self._clean_json(raw))
             except json.JSONDecodeError as e:
-                logger.warning(f"{self.stage_name} attempt {attempt}/{self.MAX_RETRIES}: JSON error — {e}")
+                logger.warning("%s attempt %d/%d: JSON error — %s", self.stage_name, attempt, self.MAX_RETRIES, e)
                 last_error = e
                 if attempt == self.MAX_RETRIES:
                     try:
@@ -185,15 +125,17 @@ class BasePipelineStage(ABC):
                     except Exception as re_err:
                         raise PipelineError(f"{self.stage_name}: JSON repair failed: {re_err}") from re_err
             except PipelineError as e:
-                logger.warning(f"{self.stage_name} attempt {attempt}/{self.MAX_RETRIES}: {e}")
+                logger.warning("%s attempt %d/%d: %s", self.stage_name, attempt, self.MAX_RETRIES, e)
                 last_error = e
             except Exception as e:
-                logger.error(f"{self.stage_name} attempt {attempt}/{self.MAX_RETRIES} unexpected: {e}")
+                logger.error("%s attempt %d/%d unexpected: %s", self.stage_name, attempt, self.MAX_RETRIES, e)
                 last_error = e
             if attempt < self.MAX_RETRIES:
                 time.sleep(self.RETRY_DELAY * attempt)
 
         raise PipelineError(f"{self.stage_name} failed after {self.MAX_RETRIES} attempts. Last: {last_error}")
+
+    # ── Chunked execution ─────────────────────────────────────────────────────
 
     CHUNK_WORKERS = 3
 
@@ -203,40 +145,23 @@ class BasePipelineStage(ABC):
         build_prompt_fn,
         merge_fn,
     ) -> dict:
-        """
-        Run the stage prompt over each chunk independently, then merge results.
-        Chunks are processed in parallel (up to CHUNK_WORKERS threads).
-        The shared rate limiter serializes actual API calls as needed.
-
-        Parameters
-        ----------
-        chunks          : list of Chunk objects
-        build_prompt_fn : callable(chunk_text, chunk_index, total_chunks) → prompt str
-        merge_fn        : callable(list[dict]) → merged dict
-        """
         import concurrent.futures
 
         if len(chunks) == 1:
-            return self._execute_with_retry(
-                build_prompt_fn(chunks[0].text, 0, 1)
-            )
+            return self._execute_with_retry(build_prompt_fn(chunks[0].text, 0, 1))
 
         def _process_chunk(chunk: Chunk) -> Optional[dict]:
-            logger.info(
-                f"{self.stage_name}: chunk {chunk.index + 1}/{len(chunks)} "
-                f"({chunk.char_count:,} chars)"
-            )
-            prompt = build_prompt_fn(chunk.text, chunk.index, len(chunks))
+            logger.info("%s: chunk %d/%d (%d chars)", self.stage_name, chunk.index + 1, len(chunks), chunk.char_count)
             try:
-                return self._execute_with_retry(prompt)
+                return self._execute_with_retry(build_prompt_fn(chunk.text, chunk.index, len(chunks)))
             except PipelineError as e:
-                logger.error(f"{self.stage_name} chunk {chunk.index} failed: {e}")
+                logger.error("%s chunk %d failed: %s", self.stage_name, chunk.index, e)
                 return None
 
         workers = min(self.CHUNK_WORKERS, len(chunks))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(_process_chunk, chunk): chunk for chunk in chunks}
-            ordered_results = [None] * len(chunks)
+            ordered_results: List[Optional[dict]] = [None] * len(chunks)
             for fut in concurrent.futures.as_completed(futures):
                 chunk = futures[fut]
                 ordered_results[chunk.index] = fut.result()
@@ -246,11 +171,9 @@ class BasePipelineStage(ABC):
             raise PipelineError(f"{self.stage_name}: all chunks failed")
 
         merged = merge_fn(results)
-        logger.info(
-            f"{self.stage_name}: merged {len(results)}/{len(chunks)} chunk results"
-        )
+        logger.info("%s: merged %d/%d chunk results", self.stage_name, len(results), len(chunks))
         return merged
 
     @abstractmethod
-    def run(self, *args, **kwargs) -> dict:
+    def run(self, context: dict) -> dict:
         pass

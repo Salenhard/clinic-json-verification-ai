@@ -1,50 +1,115 @@
-from .base import BasePipelineStage, PipelineError
-from copy import deepcopy
+"""Stage 4 — Correct and supplement the JSON using LLM.
+
+KEY RULES enforced by the prompt:
+  • Output must have exactly the same top-level structure as the input.
+  • Only existing fields can be filled / corrected.
+  • No keys may be added or deleted.
+  • All added values must come from the clinical guidelines.
+"""
 import json
+import logging
+from copy import deepcopy
 from typing import Dict, Any
+
+from .base import BasePipelineStage, PipelineError
+
+logger = logging.getLogger(__name__)
+
 
 class CorrectionStage(BasePipelineStage):
     stage_name = "stage4_correction"
     MAX_OUTPUT_TOKENS = 32768
 
     _PROMPT = """\
-Задача: исправить и дополнить JSON согласно клиническим рекомендациям.
+Задача: исправить и дополнить JSON-документ согласно клиническим рекомендациям.
 
 ОРИГИНАЛЬНЫЙ JSON:
 {original_json}
 
-РЕКОМЕНДАЦИИ:
+КЛИНИЧЕСКИЕ РЕКОМЕНДАЦИИ (фрагмент):
 {recommendations}
 
 НАЙДЕННЫЕ ПРОБЛЕМЫ:
 {issues_text}
 
-Ты можешь:
-- Исправлять существующие поля
-- Добавлять отсутствующие поля (missing_fields)
-- Заполнять значения по рекомендациям
-
-НЕ МЕНЯЙ СТРУКТУРУ ИСХОДНОГО JSON (не удаляй поля, не переименовывай ключи верхнего уровня).
+СТРОГИЕ ПРАВИЛА:
+1. Верни документ с ТОЧНО ТАКОЙ ЖЕ СТРУКТУРОЙ — те же ключи верхнего уровня.
+2. НЕ добавляй новые ключи верхнего уровня.
+3. НЕ удаляй существующие поля.
+4. НЕ переименовывай ключи.
+5. Только заполняй пустые/null значения или исправляй неверные — согласно рекомендациям.
+6. Все добавленные данные должны строго соответствовать клиническим рекомендациям.
+7. Если исправить нечего — верни оригинальный JSON без изменений.
 
 Верни **полный** исправленный JSON + changelog:
 {{
-  "corrected_json": {{ ... полный JSON ... }},
+  "corrected_json": {{ ... полный исправленный документ ... }},
   "changelog": [
-    {{"action": "added|modified", "field": "имя_поля", "reason": "..." }}
+    {{"action": "added|modified", "field": "путь.к.полю", "old_value": "...", "new_value": "...", "reason": "..."}}
   ]
 }}
 """
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        corrected = deepcopy(context["original_data"])
-        suggestions = context["analysis"].get("suggestions", {})
+        original = context["original_data"]
+        analysis = context["analysis"]
+        issues = analysis.get("issues", [])
+        missing = analysis.get("missing_fields", [])
 
-        for field, value in suggestions.items():
-            corrected[field] = value
-              
-        for field in context["analysis"].get("missing_fields", []):
-            if field not in corrected:
-                corrected[field] = None
+        # Skip LLM call if nothing to fix
+        critical_or_warning = [i for i in issues if i.get("severity") in ("critical", "warning")]
+        if not critical_or_warning and not missing:
+            logger.info("CorrectionStage: no issues — skipping LLM call")
+            context["corrected_data"] = deepcopy(original)
+            context["changelog"] = []
+            return context
+
+        # Format issues for the prompt
+        issues_lines = []
+        for iss in issues:
+            sev = iss.get("severity", "info").upper()
+            field = iss.get("field") or "—"
+            desc = iss.get("description", "")
+            sugg = iss.get("suggestion", "")
+            issues_lines.append(f"[{sev}] {field}: {desc}")
+            if sugg:
+                issues_lines.append(f"  → {sugg}")
+        for f in missing:
+            issues_lines.append(f"[MISSING] {f}: поле отсутствует в документе")
+
+        original_json = json.dumps(original, ensure_ascii=False, indent=2)
+        if len(original_json) > 15_000:
+            original_json = original_json[:15_000] + "\n... [truncated]"
+
+        # Use full recommendations text if available, else fall back to first chunk
+        rec_text = context.get("recommendations_full_text", "")
+        if not rec_text and context.get("recommendation_chunks"):
+            rec_text = context["recommendation_chunks"][0].text
+        if len(rec_text) > 15_000:
+            rec_text = rec_text[:15_000]
+
+        prompt = self._PROMPT.format(
+            original_json=original_json,
+            recommendations=rec_text,
+            issues_text="\n".join(issues_lines) or "Проблем не найдено.",
+        )
+
+        result = self._execute_with_retry(prompt)
+
+        # FIX: validate that LLM preserved structure
+        corrected = result.get("corrected_json")
+        if not isinstance(corrected, dict):
+            logger.warning("CorrectionStage: LLM returned invalid corrected_json — using original")
+            corrected = deepcopy(original)
+
+        # Guard: ensure no top-level keys were dropped
+        for key in original:
+            if key not in corrected:
+                logger.warning("CorrectionStage: LLM dropped key '%s' — restoring from original", key)
+                corrected[key] = original[key]
 
         context["corrected_data"] = corrected
+        context["changelog"] = result.get("changelog", [])
+
+        logger.info("CorrectionStage: %d changes applied", len(context["changelog"]))
         return context
