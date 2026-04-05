@@ -163,7 +163,7 @@ def process_task(
     task_id: str,
     input_data,
     recommendations: str,
-    recommendations_file,
+    recommendations_bytes,
     model: str,
 ) -> None:
     """Background thread: run the full pipeline for one task."""
@@ -171,7 +171,7 @@ def process_task(
     context = {
         "input_data": input_data,
         "recommendations": recommendations,
-        "recommendations_file": recommendations_file,
+        "recommendations_bytes": recommendations_bytes,
     }
 
     try:
@@ -226,10 +226,8 @@ def verify():
         except Exception as e:
             return jsonify({"error": f"Невалидный JSON в поле 'data': {e}"}), 400
 
-    # ── Parse model override ───────────────────────────────────────────────────
     model = request.form.get("model") or GEMINI_MODEL
 
-    # ── Parse recommendations ──────────────────────────────────────────────────
     recommendations_file = request.files.get("recommendations_file")
     recommendations_text = request.form.get("recommendations", "")
 
@@ -241,10 +239,14 @@ def verify():
     # ── Create task and start thread ───────────────────────────────────────────
     task_id = str(uuid.uuid4())
     create_task(task_id)
+    recommendations_bytes = None
+
+    if recommendations_file:
+        recommendations_bytes = recommendations_file.read()
 
     threading.Thread(
         target=process_task,
-        args=(task_id, input_data, recommendations_text, recommendations_file, model),
+        args=(task_id, input_data, recommendations_text, recommendations_bytes, model),
         daemon=True,
         name=f"task-{task_id[:8]}",
     ).start()

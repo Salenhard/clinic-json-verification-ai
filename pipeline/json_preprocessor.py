@@ -1,7 +1,7 @@
 """Stage 1 — Preprocess: extract PDF text, validate inputs, split into chunks."""
 import logging
 from typing import Dict, Any, List
-
+import io
 from .base import BasePipelineStage, PipelineError
 from .chunker import TextChunker, Chunk
 
@@ -25,7 +25,6 @@ class JsonPreprocessor(BasePipelineStage):
 
         if not pdf_file:
             return ""
-
         text_parts: list[str] = []
         try:
             with pdfplumber.open(pdf_file) as pdf:
@@ -58,8 +57,9 @@ class JsonPreprocessor(BasePipelineStage):
 
         # ── Extract guidelines text ───────────────────────────────────────────
         recommendations_text: str = context.get("recommendations", "") or ""
-        pdf_file = context.get("recommendations_file")
-
+        pdf_bytes = context.get("recommendations_bytes")
+        if pdf_bytes:
+            pdf_file = io.BytesIO(pdf_bytes)
         if pdf_file:
             fname = getattr(pdf_file, "filename", "") or ""
             if fname.lower().endswith(".pdf"):
