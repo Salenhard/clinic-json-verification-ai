@@ -38,24 +38,23 @@ JSON:
 }}
 """
 
-        def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
+    def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         self.update_progress(context, 30, "LLM-анализ рекомендаций по чанкам...")
-
         json_data = json.dumps(context["original_data"], ensure_ascii=False, indent=2)
         chunks = context["recommendation_chunks"]
 
-        def build_prompt(chunk_text: str, chunk_index: int, total: int) -> str:
-            return self._PROMPT_TEMPLATE.format(
-                chunk_text=chunk_text,
-                json_data=json_data
-            )
+    def build_prompt(chunk_text: str, chunk_index: int, total: int) -> str:
+        return self._PROMPT_TEMPLATE.format(
+            chunk_text=chunk_text,
+            json_data=json_data
+        )
 
-        def merge_fn(results: list) -> dict:
-            all_issues = []
-            all_suggestions = {}
-            for r in results:
-                all_issues.extend(r.get("issues", []))
-                all_suggestions.update(r.get("suggestions", {}))
+    def merge_fn(results: list) -> dict:
+        all_issues = []
+        all_suggestions = {}
+        for r in results:
+            all_issues.extend(r.get("issues", []))
+            all_suggestions.update(r.get("suggestions", {}))
             return {
                 "issues": all_issues,
                 "missing_fields": list(set().union(*(r.get("missing_fields", []) for r in results))),
