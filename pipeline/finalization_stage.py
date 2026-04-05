@@ -6,8 +6,7 @@ class FinalizationStage(BasePipelineStage):
     stage_name = "stage5_finalization"
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        self.update_progress(context, 95, "Финальная сборка результата...")
-
+    
         result = context["corrected_data"]
         result["validated"] = True
         result["validated_at"] = datetime.now().isoformat()
@@ -15,5 +14,4 @@ class FinalizationStage(BasePipelineStage):
         result["validation_issues"] = context.get("validation_issues", [])
 
         context["final_result"] = result
-        self.update_progress(context, 100, "Обработка завершена успешно")
         return context

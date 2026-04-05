@@ -39,7 +39,6 @@ JSON:
 """
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        self.update_progress(context, 30, "LLM-анализ рекомендаций по чанкам...")
         json_data = json.dumps(context["original_data"], ensure_ascii=False, indent=2)
         chunks = context["recommendation_chunks"]
 
@@ -73,5 +72,4 @@ JSON:
             analysis = self._execute_with_retry(prompt)
 
         context["analysis"] = analysis
-        self.update_progress(context, 50, f"Анализ завершён ({len(chunks)} чанков)")
         return context

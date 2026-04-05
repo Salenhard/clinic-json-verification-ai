@@ -27,7 +27,6 @@ if not GEMINI_API_KEY:
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ←←← ТВОЙ RATE LIMITER ←←←
 configure_limiter(int(os.getenv("RPM", 15)))
 
 stages = [
@@ -73,7 +72,7 @@ def process_task(task_id: str, input_data: dict, recommendations: str = "", reco
     try:
         update_task(task_id, "processing", 5, "Запуск пайплайна")
         for stage in stages:
-            context = stage.run(context)          # здесь автоматически работает твой limiter
+            context = stage.run(context)
         update_task(task_id, "completed", 100, "Верификация завершена", context["final_result"])
 
     except Exception as e:

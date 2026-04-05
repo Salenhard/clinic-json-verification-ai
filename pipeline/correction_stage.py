@@ -36,8 +36,6 @@ class CorrectionStage(BasePipelineStage):
 """
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        self.update_progress(context, 80, "Применение исправлений без изменения структуры...")
-
         corrected = deepcopy(context["original_data"])
         suggestions = context["analysis"].get("suggestions", {})
 
@@ -49,5 +47,4 @@ class CorrectionStage(BasePipelineStage):
                 corrected[field] = None
 
         context["corrected_data"] = corrected
-        self.update_progress(context, 90, "Исправления применены")
         return context
