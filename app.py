@@ -79,13 +79,6 @@ def init_db() -> None:
         """)
         conn.execute("PRAGMA journal_mode=WAL")
 
-def completeness_score(data):
-    if not isinstance(data, dict):
-        return 0
-
-    filled = sum(1 for v in data.values() if v not in [None, "", [], {}])
-    return filled / len(data) if data else 0
-
 @contextmanager
 def _db():
     """Open a SQLite connection with WAL and row_factory."""
@@ -173,10 +166,10 @@ def process_task(
         context = stages[0].run(context)
 
         max_iterations = 5
-        target_score = 0.8
+        target_score = 1.0
 
         for i in range(max_iterations):
-            update_task(task_id, "processing", 20 + i * 10, f"Итерация {i+1}: анализ и исправление")
+            update_task(task_id, "processing", 20 +  (i / (max_iterations - 1)) * 80, f"Итерация {i+1}: анализ и исправление")
 
             # --- Stage 2
             context = stages[1].run(context)
@@ -188,11 +181,13 @@ def process_task(
             context = stages[3].run(context)
 
             if "corrected_data" in context:
+                context["input_data"]   = context["corrected_data"]
                 context["original_data"] = context["corrected_data"]
 
-            data = context.get("validated_json") or context.get("corrected_data")
+            data = context.get("corrected_data")
 
-            score = completeness_score(data)
+            score = context.get("analysis", {}).get("completeness_score", 0.0)
+
             print(f"Iteration {i+1}, completeness: {score}")
 
             if score >= target_score:
