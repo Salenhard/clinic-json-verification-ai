@@ -188,7 +188,7 @@ def process_task(
             context = stages[3].run(context)
 
             if "corrected_data" in context:
-                context["input_data"] = context["corrected_data"]
+                context["original_data"] = context["corrected_data"]
 
             data = context.get("validated_json") or context.get("corrected_data")
 
