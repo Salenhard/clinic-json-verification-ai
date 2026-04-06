@@ -152,12 +152,20 @@ _STAGE_MESSAGES = [
 ]
 
 
-def process_task(task_id: str, input_data: dict, recommendations: str = "", recommendations_bytes=None, model=GEMINI_MODEL):
+def process_task(
+    task_id: str,
+    input_data,
+    recommendations: str,
+    recommendations_bytes,
+    recommendations_filename,
+    model: str,
+) -> None:
     context = {
-        "input_data": input_data,
-        "recommendations": recommendations,
-        "recommendations_bytes": recommendations_bytes,
-    }
+    "input_data": input_data,
+    "recommendations": recommendations,
+    "recommendations_bytes": recommendations_bytes,
+    "recommendations_filename": recommendations_filename,
+}
     stages = _build_stages(model)
     try:
         update_task(task_id, "processing", 5, "Запуск пайплайна")
@@ -240,7 +248,14 @@ def verify():
     recommendations_file = request.files.get("recommendations_file")
     recommendations_text = request.form.get("recommendations", "")
 
-    if not recommendations_file and not recommendations_text.strip():
+    recommendations_bytes = None
+    recommendations_filename = None
+
+    if recommendations_file:
+        recommendations_bytes = recommendations_file.read()
+        recommendations_filename = recommendations_file.filename
+
+    if not recommendations_bytes and not recommendations_text.strip():
         return jsonify({
             "error": "Передайте PDF-файл в 'recommendations_file' или текст в 'recommendations'"
         }), 400
@@ -255,7 +270,14 @@ def verify():
 
     threading.Thread(
         target=process_task,
-        args=(task_id, input_data, recommendations_text, recommendations_bytes, model),
+        args=(
+            task_id,
+            input_data,
+            recommendations_text,
+            recommendations_bytes,
+            recommendations_filename,
+            model
+        ),
         daemon=True,
         name=f"task-{task_id[:8]}",
     ).start()

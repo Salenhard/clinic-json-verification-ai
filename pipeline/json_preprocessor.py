@@ -58,6 +58,7 @@ class JsonPreprocessor(BasePipelineStage):
         # ── Extract guidelines text ───────────────────────────────────────────
         recommendations_text: str = context.get("recommendations", "") or ""
         pdf_bytes = context.get("recommendations_bytes")
+        filename = context.get("recommendations_filename", "") or ""
         if pdf_bytes:
             pdf_file = io.BytesIO(pdf_bytes)
         if pdf_file:
