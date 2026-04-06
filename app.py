@@ -50,7 +50,7 @@ logging.basicConfig(
 logger = logging.getLogger("app")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
 RPM = int(os.getenv("RPM", "15"))
 DB_PATH = os.getenv("DB_PATH", "tasks.db")
 
@@ -309,6 +309,47 @@ def get_result(task_id: str):
 
     return jsonify(task["result"]), 200
 
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+class ServerThread(threading.Thread):
+    def __init__(self, app):
+        super().__init__()
+        self.server = make_server('0.0.0.0', 5000, app)
+        self.ctx = app.app_context()
+        self.ctx.push()
+
+    def run(self):
+        print("🚀 Сервер запущен")
+        self.server.serve_forever()
+
+    def shutdown(self):
+        self.server.shutdown()
+
+init_db()
+server = ServerThread(app)
+server.start()
+
+url = "http://127.0.0.1:5000/api/verify"
+
+files = {
+    "recommendations_file": open("demo2.pdf", "rb")
+}
+
+with open("demo_triplets.json", "r", encoding="utf-8") as f:
+    json_data = json.load(f)
+
+data = {
+    "data": json.dumps(json_data),
+    "recommendations": "from json file"
+}
+
+response = requests.post(url, files=files, data=data)
+
+print(response.json())
+task_id = response.json()["task_id"]
+
+url = f"http://127.0.0.1:5000/api/status/{task_id}"
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
