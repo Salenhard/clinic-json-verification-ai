@@ -187,10 +187,10 @@ def process_task(
             # Stage 4
             context = stages[3].run(context)
 
-            if "corrected_json" in context:
-                context["input_data"] = context["corrected_json"]
+            if "corrected_data" in context:
+                context["input_data"] = context["corrected_data"]
 
-            data = context.get("validated_json") or context.get("corrected_json")
+            data = context.get("validated_json") or context.get("corrected_data")
 
             score = completeness_score(data)
             print(f"Iteration {i+1}, completeness: {score}")
