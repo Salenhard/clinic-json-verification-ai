@@ -49,8 +49,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app")
 
-# ── Config ────────────────────────────────────────────────────────────────────
-
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 RPM = int(os.getenv("RPM", "15"))
@@ -59,19 +57,12 @@ DB_PATH = os.getenv("DB_PATH", "tasks.db")
 if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY не задан в .env или переменных окружения")
 
-# ── Gemini client (shared, thread-safe) ───────────────────────────────────────
-
 _genai_client = genai.Client(api_key=GEMINI_API_KEY)
 configure_limiter(RPM)
 
-# ── Flask app ─────────────────────────────────────────────────────────────────
-
 app = Flask(__name__)
 CORS(app)
-app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
-
-
-# ── SQLite helpers (thread-safe WAL mode) ─────────────────────────────────────
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 def init_db() -> None:
     with _db() as conn:
@@ -86,9 +77,14 @@ def init_db() -> None:
                 updated_at TEXT
             )
         """)
-        # Enable WAL mode so concurrent readers don't block writers
         conn.execute("PRAGMA journal_mode=WAL")
 
+def completeness_score(data):
+    if not isinstance(data, dict):
+        return 0
+
+    filled = sum(1 for v in data.values() if v not in [None, "", [], {}])
+    return filled / len(data) if data else 0
 
 @contextmanager
 def _db():
@@ -136,9 +132,6 @@ def get_task(task_id: str) -> dict | None:
         d["result"] = json.loads(d["result"])
     return d
 
-
-# ── Pipeline runner ───────────────────────────────────────────────────────────
-
 def _build_stages(model: str) -> list:
     """Create a fresh set of stage objects for one job (not shared between jobs)."""
     return [
@@ -159,41 +152,59 @@ _STAGE_MESSAGES = [
 ]
 
 
-def process_task(
-    task_id: str,
-    input_data,
-    recommendations: str,
-    recommendations_bytes,
-    model: str,
-) -> None:
-    """Background thread: run the full pipeline for one task."""
-    stages = _build_stages(model)
+def process_task(task_id: str, input_data: dict, recommendations: str = "", recommendations_file=None):
     context = {
+        "task_id": task_id,
         "input_data": input_data,
         "recommendations": recommendations,
-        "recommendations_bytes": recommendations_bytes,
+        "recommendations_file": recommendations_file,
     }
 
     try:
         update_task(task_id, "processing", 5, "Запуск пайплайна")
 
-        for i, stage in enumerate(stages):
-            progress, message = _STAGE_MESSAGES[i]
-            update_task(task_id, "processing", progress, message)
-            context = stage.run(context)
+        context = stages[0].run(context)
 
-        update_task(task_id, "completed", 100, "Верификация завершена", context["final_result"])
-        logger.info("Task %s completed", task_id)
+        max_iterations = 5
+        target_score = 0.9
 
-    except PipelineError as e:
-        logger.error("Task %s pipeline error: %s", task_id, e)
-        update_task(task_id, "error", 0, f"Ошибка пайплайна: {e}")
+        for i in range(max_iterations):
+            update_task(task_id, "processing", 20 + i * 10, f"Итерация {i+1}: анализ и исправление")
+
+            # --- Stage 2 ---
+            context = stages[1].run(context)
+
+            # --- Stage 3 ---
+            context = stages[2].run(context)
+
+            # Stage 4
+            context = stages[3].run(context)
+
+            if "corrected_json" in context:
+                context["input_data"] = context["corrected_json"]
+
+            # --- проверка ---
+            data = context.get("validated_json") or context.get("corrected_json")
+
+            score = completeness_score(data)
+            print(f"Iteration {i+1}, completeness: {score}")
+
+            if score >= target_score:
+                update_task(task_id, "processing", 80, "Достигнута достаточная полнота")
+                break
+
+        context = stages[4].run(context)
+
+        update_task(
+            task_id,
+            "completed",
+            100,
+            "Верификация завершена",
+            context.get("final_result")
+        )
+
     except Exception as e:
-        logger.exception("Task %s unexpected error", task_id)
-        update_task(task_id, "error", 0, f"Внутренняя ошибка: {e}")
-
-
-# ── Routes ────────────────────────────────────────────────────────────────────
+        update_task(task_id, "error", 0, f"Ошибка: {str(e)}")
 
 @app.get("/api/health")
 def health():
@@ -204,8 +215,7 @@ def health():
 def verify():
     """Submit a new verification task."""
     model = GEMINI_MODEL
-
-    # ── Parse JSON document ────────────────────────────────────────────────────
+    
     json_file = request.files.get("json_file")
     if json_file is not None:
         try:

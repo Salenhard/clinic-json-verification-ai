@@ -27,15 +27,12 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-
-# ── Data class ────────────────────────────────────────────────────────────────
-
 @dataclass
 class Chunk:
     index: int
     text: str
-    start_char: int   # offset in the *original* (pre-overlap) text
-    end_char: int     # offset in the *original* text
+    start_char: int
+    end_char: int
 
     @property
     def char_count(self) -> int:
@@ -46,9 +43,6 @@ class Chunk:
             f"Chunk(index={self.index}, chars={self.char_count:,}, "
             f"orig={self.start_char}:{self.end_char})"
         )
-
-
-# ── Boundary patterns (coarsest → finest) ────────────────────────────────────
 
 _BOUNDARIES = [
     # Numbered section like "1.", "2.3", "4.1.2" at the start of a line
@@ -63,24 +57,7 @@ _BOUNDARIES = [
     re.compile(r"(?<=[.!?])\s+(?=[А-ЯЁA-Z0-9])"),
 ]
 
-
-# ── Chunker ───────────────────────────────────────────────────────────────────
-
 class TextChunker:
-    """
-    Split long text into overlapping chunks that respect semantic boundaries.
-
-    Parameters
-    ----------
-    max_chars : int
-        Max characters per chunk body (default 12 000 ≈ ~3 000 tokens).
-    overlap_chars : int
-        Chars from the tail of chunk N prepended to chunk N+1 (default 400).
-    min_chunk_chars : int
-        Chunks smaller than this are merged into the previous one (default 300).
-    overlap_marker : str
-        Separator inserted between overlap tail and new body.
-    """
 
     def __init__(
         self,
@@ -93,8 +70,6 @@ class TextChunker:
         self.overlap_chars = overlap_chars
         self.min_chunk_chars = min_chunk_chars
         self.overlap_marker = overlap_marker
-
-    # ── Public ────────────────────────────────────────────────────────────────
 
     def split(self, text: str) -> List[Chunk]:
         """Return a list of Chunk objects for *text*."""

@@ -25,9 +25,8 @@ class BasePipelineStage(ABC):
     RATE_LIMIT_BACKOFF = 65
     MAX_OUTPUT_TOKENS = 32768
 
-    # FIX: removed graph-specific wording — this is now a generic validator
     _SYSTEM_INSTRUCTION = (
-        "Ты эксперт по клиническим рекомендациям и медицинским стандартам. "
+        "Ты анализатор текста по клиническим рекомендациям и медицинским стандартам. "
         "Отвечай только валидным JSON без лишних пояснений и markdown-разметки. "
         "Используй только сведения из предоставленного текста — не придумывай данные."
     )

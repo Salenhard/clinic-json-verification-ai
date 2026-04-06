@@ -30,6 +30,7 @@ JSON-ДОКУМЕНТ:
 2. Корректность значений (соответствуют ли они рекомендациям)
 3. Отсутствующие критически важные данные
 4. Противоречия с рекомендациями
+5. Покрывает ли документ все клинические рекомендации
 
 Верни ТОЛЬКО валидный JSON (без markdown):
 {{
@@ -47,8 +48,6 @@ JSON-ДОКУМЕНТ:
   "overall_comment": "..."
 }}
 """
-
-    # FIX: build_prompt and merge_fn are now proper bound methods, not closures
     def _build_prompt(self, chunk_text: str, chunk_index: int, total_chunks: int, json_data: str) -> str:
         return self._PROMPT_TEMPLATE.format(
             json_data=json_data,
@@ -72,7 +71,6 @@ JSON-ДОКУМЕНТ:
             if score is not None:
                 scores.append(float(score))
 
-        # Deduplicate issues by (field, description)
         seen: set[tuple] = set()
         unique_issues = []
         for iss in all_issues:
@@ -91,14 +89,9 @@ JSON-ДОКУМЕНТ:
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         json_data = json.dumps(context["original_data"], ensure_ascii=False, indent=2)
-        # Truncate very large documents to avoid context overflow
-        if len(json_data) > 20_000:
-            logger.warning("JSON truncated for analysis: %d → 20000 chars", len(json_data))
-            json_data = json_data[:20_000] + "\n... [truncated]"
 
         chunks = context["recommendation_chunks"]
 
-        # FIX: use lambda to capture json_data in the closure properly
         analysis = self._execute_over_chunks(
             chunks=chunks,
             build_prompt_fn=lambda text, idx, total: self._build_prompt(text, idx, total, json_data),
