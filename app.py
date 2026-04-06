@@ -152,7 +152,7 @@ _STAGE_MESSAGES = [
 ]
 
 
-def process_task(task_id: str, input_data: dict, recommendations: str = "", recommendations_bytes=None, model):
+def process_task(task_id: str, input_data: dict, recommendations: str = "", recommendations_bytes=None, model=GEMINI_MODEL):
     context = {
         "input_data": input_data,
         "recommendations": recommendations,
