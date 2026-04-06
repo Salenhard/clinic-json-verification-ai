@@ -152,21 +152,20 @@ _STAGE_MESSAGES = [
 ]
 
 
-def process_task(task_id: str, input_data: dict, recommendations: str = "", recommendations_file=None):
+def process_task(task_id: str, input_data: dict, recommendations: str = "", recommendations_bytes=None, model):
     context = {
-        "task_id": task_id,
         "input_data": input_data,
         "recommendations": recommendations,
-        "recommendations_file": recommendations_file,
+        "recommendations_bytes": recommendations_bytes,
     }
-
+    stages = _build_stages(model)
     try:
         update_task(task_id, "processing", 5, "Запуск пайплайна")
 
         context = stages[0].run(context)
 
         max_iterations = 5
-        target_score = 0.9
+        target_score = 0.8
 
         for i in range(max_iterations):
             update_task(task_id, "processing", 20 + i * 10, f"Итерация {i+1}: анализ и исправление")
