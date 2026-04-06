@@ -23,7 +23,7 @@ class BasePipelineStage(ABC):
     MAX_RETRIES = 3
     RETRY_DELAY = 2
     RATE_LIMIT_BACKOFF = 65
-    MAX_OUTPUT_TOKENS = 32768
+    MAX_OUTPUT_TOKENS = 65536 
 
     _SYSTEM_INSTRUCTION = (
         "Ты анализатор текста по клиническим рекомендациям и медицинским стандартам. "

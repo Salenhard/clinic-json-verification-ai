@@ -77,8 +77,6 @@ class CorrectionStage(BasePipelineStage):
             issues_lines.append(f"[MISSING] {f}: поле отсутствует в документе")
 
         original_json = json.dumps(original, ensure_ascii=False, indent=2)
-        if len(original_json) > 15_000:
-            original_json = original_json[:15_000] + "\n... [truncated]"
 
         rec_text = context.get("recommendations_full_text", "")
         if not rec_text and context.get("recommendation_chunks"):
