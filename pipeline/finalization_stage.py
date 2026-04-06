@@ -23,6 +23,7 @@ class FinalizationStage(BasePipelineStage):
             },
 
             "changelog": context.get("changelog", []),
+            
             "meta": {
                 "validated_at": datetime.now(timezone.utc).isoformat(),
                 "note": "JSON проверен и дополнен согласно клиническим рекомендациям.",

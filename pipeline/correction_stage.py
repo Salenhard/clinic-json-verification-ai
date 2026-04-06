@@ -80,7 +80,6 @@ class CorrectionStage(BasePipelineStage):
         if len(original_json) > 15_000:
             original_json = original_json[:15_000] + "\n... [truncated]"
 
-        # Use full recommendations text if available, else fall back to first chunk
         rec_text = context.get("recommendations_full_text", "")
         if not rec_text and context.get("recommendation_chunks"):
             rec_text = context["recommendation_chunks"][0].text
