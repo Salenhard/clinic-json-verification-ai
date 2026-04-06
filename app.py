@@ -178,10 +178,10 @@ def process_task(
         for i in range(max_iterations):
             update_task(task_id, "processing", 20 + i * 10, f"Итерация {i+1}: анализ и исправление")
 
-            # --- Stage 2 ---
+            # --- Stage 2
             context = stages[1].run(context)
 
-            # --- Stage 3 ---
+            # --- Stage 3
             context = stages[2].run(context)
 
             # Stage 4
@@ -262,10 +262,6 @@ def verify():
     # ── Create task and start thread ───────────────────────────────────────────
     task_id = str(uuid.uuid4())
     create_task(task_id)
-    recommendations_bytes = None
-
-    if recommendations_file:
-        recommendations_bytes = recommendations_file.read()
 
     threading.Thread(
         target=process_task,
