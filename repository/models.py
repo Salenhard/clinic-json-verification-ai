@@ -28,7 +28,7 @@ class Task:
     result: Any = None
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime | None = None
-    json_path: str
+    json_path: str = ""
 
     def to_dict(self) -> dict:
         return {
