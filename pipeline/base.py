@@ -80,10 +80,22 @@ class BasePipelineStage(ABC):
 
     def _repair_json(self, broken_text: str) -> dict:
         logger.warning("%s: attempting JSON repair", self.stage_name)
+
+        # Попытка 1: простые regex-исправления без LLM
+        cleaned = broken_text.strip()
+        # Удаляем trailing запятые перед } или ]
+        cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
+        # Закрываем незакрытые строки в конце
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+        # Попытка 2: LLM repair (до 8000 символов)
         fixed = self._call_llm(
             "The following text should be valid JSON but has syntax errors. "
             "Fix it and return ONLY valid JSON, no explanations, no markdown:\n\n"
-            + broken_text[:4000]
+            + broken_text[:8000]
         )
         return json.loads(self._clean_json(fixed))
 
@@ -117,7 +129,7 @@ class BasePipelineStage(ABC):
 
     # ── Chunked execution ─────────────────────────────────────────────────────
 
-    CHUNK_WORKERS = 3
+    CHUNK_WORKERS = 1  # Sequential — безопаснее с rate limits слабых моделей
 
     def _execute_over_chunks(
         self,

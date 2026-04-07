@@ -33,7 +33,7 @@ class GeminiAdapter(LLMAdapter):
     def complete(self, prompt: str, system: Optional[str] = None) -> str:
         from google.genai import types as genai_types
         config = genai_types.GenerateContentConfig(
-            temperature=0.1,
+            temperature=0.0,
             max_output_tokens=self._max_tokens,
             system_instruction=system,
         )
@@ -75,7 +75,7 @@ class OpenAICompatibleAdapter(LLMAdapter):
         resp = self._client.chat.completions.create(
             model=self._model,
             messages=messages,
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=self._max_tokens,
         )
         return resp.choices[0].message.content
@@ -123,7 +123,13 @@ class LLMAdapterFactory:
     """
 
     _registry = {
-        "gemini": GeminiAdapter,
+        "gemini": lambda model="gemini-2.0-flash", api_key=None, **kw: (
+            GeminiAdapter(
+                client=__import__("google.genai", fromlist=["genai"]).Client(api_key=api_key),
+                model=model,
+                **kw,
+            )
+        ),
         "claude": ClaudeAdapter,
         "openai": OpenAICompatibleAdapter,
         "gpt":    OpenAICompatibleAdapter,

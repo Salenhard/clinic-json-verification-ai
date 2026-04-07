@@ -114,8 +114,15 @@ class VerificationService:
 
     def _resolve_adapter(self, req: VerificationRequest) -> LLMAdapter:
         if req.model is not None:
+            provider = req.llm_provider or "gemini"
+            # Gemini требует client, а не api_key — создаём client на лету
+            if provider.lower() == "gemini":
+                from google import genai
+                api_key = req.api_key or self._settings.gemini_api_key
+                client = genai.Client(api_key=api_key)
+                return GeminiAdapter(client=client, model=req.model)
             return LLMAdapterFactory.create(
-                req.llm_provider,
+                provider,
                 model=req.model,
                 api_key=req.api_key or self._settings.gemini_api_key,
             )
@@ -150,13 +157,14 @@ class VerificationService:
             context = stages[4].run(context)
 
             folder = "results"
-            self._save_result(folder)          
+            result = context.get("final_result")
+            self._save_result(folder, task_id, result)
 
             self._update(
                 task_id, TaskStatus.COMPLETED, 100,
                 "Верификация завершена",
-                result=context.get("final_result"),
-                json_path = os.path.join(folder, f"{task_id}.json")
+                result=result,
+                json_path=os.path.join(folder, f"{task_id}.json")
             )
 
         except Exception as exc:
@@ -165,14 +173,14 @@ class VerificationService:
             if task and task.status == TaskStatus.ABORTED:
                 logger.info("Task %s aborted", task_id)
                 return
-                
+
             logger.exception("Pipeline failed for task %s", task_id)
             self._update(task_id, TaskStatus.ERROR, 0, f"Ошибка: {exc}")
 
-    def _save_result(self, folder_name: str) -> None:
-        os.makedirs(folder, exist_ok=True)
+    def _save_result(self, folder_name: str, task_id: str, result: Any) -> None:
+        os.makedirs(folder_name, exist_ok=True)
 
-        filename = os.path.join(folder, f"{task_id}.json")
+        filename = os.path.join(folder_name, f"{task_id}.json")
 
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=4)
@@ -184,8 +192,14 @@ class VerificationService:
 
     def _refinement_loop(self, task_id: str, context: dict, stages: list) -> dict:
         """Run analysis → validation → correction up to max_iterations times."""
+        from copy import deepcopy
+
         max_iter = context["max_iterations"]
         target = context["target_score"]
+
+        # Сохраняем первоначальный оригинал — для восстановления полей
+        # если LLM дропнет что-то на поздних итерациях
+        context["pristine_original"] = deepcopy(context["original_data"])
 
         for i in range(max_iter):
             self._check_aborted(task_id)
@@ -200,6 +214,8 @@ class VerificationService:
             context = stages[3].run(context)   # CorrectionStage
 
             if "corrected_data" in context:
+                # original_data обновляем для анализа на следующей итерации,
+                # но pristine_original остаётся нетронутым
                 context["input_data"] = context["corrected_data"]
                 context["original_data"] = context["corrected_data"]
 
