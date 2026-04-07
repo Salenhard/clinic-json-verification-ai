@@ -24,7 +24,6 @@ from repository import AbstractTaskRepository, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class VerificationRequest:
     """Everything the service needs to start a verification job."""
@@ -148,10 +147,10 @@ class VerificationService:
     def _save_result(self, folder_name: str) -> None:
         os.makedirs(folder, exist_ok=True)
 
-            filename = os.path.join(folder, f"{task_id}.json")
+        filename = os.path.join(folder, f"{task_id}.json")
 
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=4)
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=4)
 
 
     def _refinement_loop(self, task_id: str, context: dict, stages: list) -> dict:
