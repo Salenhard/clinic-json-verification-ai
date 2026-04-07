@@ -39,7 +39,7 @@ class CorrectionStage(BasePipelineStage):
 4. Только заполняй пустые/null значения или исправляй неверные — согласно рекомендациям.
 5. Все добавленные данные должны строго соответствовать клиническим рекомендациям.
 6. Если исправить нечего — верни оригинальный JSON без изменений.
-Ты можешь добавить отсутсвующие сущности из документа.
+Ты можешь добавить отсутствующие сущности из документа.
 Верни **полный** исправленный JSON + changelog:
 {{
   "corrected_json": {{ ... полный исправленный документ ... }},
@@ -92,20 +92,38 @@ class CorrectionStage(BasePipelineStage):
 
         result = self._execute_with_retry(prompt)
 
-        # FIX: validate that LLM preserved structure
         corrected = result.get("corrected_json")
-        if not isinstance(corrected, dict):
-            logger.warning("CorrectionStage: LLM returned invalid corrected_json — using original")
+
+        # FIX: документ может быть списком (list) или словарём (dict).
+        # Раньше стояла проверка isinstance(corrected, dict), которая всегда
+        # отклоняла списки и откатывала к оригиналу — исправления не применялись.
+        if not isinstance(corrected, (dict, list)):
+            logger.warning(
+                "CorrectionStage: LLM вернул некорректный corrected_json (тип %s) — используем оригинал",
+                type(corrected).__name__,
+            )
             corrected = deepcopy(original)
 
-        # Guard: ensure no top-level keys were dropped
-        for key in original:
-            if key not in corrected:
-                logger.warning("CorrectionStage: LLM dropped key '%s' — restoring from original", key)
-                corrected[key] = original[key]
+        # Guard: для dict-документов восстанавливаем выпавшие ключи верхнего уровня.
+        # Для list-документов этот guard неприменим — структура проверяется по длине.
+        if isinstance(original, dict) and isinstance(corrected, dict):
+            for key in original:
+                if key not in corrected:
+                    logger.warning(
+                        "CorrectionStage: LLM удалил ключ '%s' — восстанавливаем из оригинала", key
+                    )
+                    corrected[key] = original[key]
+        elif isinstance(original, list) and isinstance(corrected, list):
+            if len(corrected) != len(original):
+                logger.warning(
+                    "CorrectionStage: LLM изменил длину списка (%d → %d) — используем оригинал",
+                    len(original),
+                    len(corrected),
+                )
+                corrected = deepcopy(original)
 
         context["corrected_data"] = corrected
         context["changelog"] = result.get("changelog", [])
 
-        logger.info("CorrectionStage: %d changes applied", len(context["changelog"]))
+        logger.info("CorrectionStage: применено %d изменений", len(context["changelog"]))
         return context
