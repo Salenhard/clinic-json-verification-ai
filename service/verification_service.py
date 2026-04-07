@@ -96,6 +96,22 @@ class VerificationService:
         except Exception as e:
             raise e
 
+    def cancel_task(self, task_id: str) -> None:
+        task = self._repo.get(task_id)
+
+        if task is None:
+            raise Exception("Task not found")
+
+        if task.status not in (TaskStatus.PENDING, TaskStatus.PROCESSING):
+            raise Exception("Нельзя отменить задачу в этом статусе")
+
+        self._update(
+            task_id,
+            status=TaskStatus.ABORTED,
+            progress=task.progress,
+            message="Задача отменена пользователем",
+    )
+
     def _resolve_adapter(self, req: VerificationRequest) -> LLMAdapter:
         if req.model is not None:
             return LLMAdapterFactory.create(
@@ -126,8 +142,11 @@ class VerificationService:
         stages = self._build_stages(adapter, context)
 
         try:
+            self._check_aborted(task_id)
             context = stages[0].run(context)
+            self._check_aborted(task_id)
             context = self._refinement_loop(task_id, context, stages)
+            self._check_aborted(task_id)
             context = stages[4].run(context)
 
             folder = "results"
@@ -141,6 +160,12 @@ class VerificationService:
             )
 
         except Exception as exc:
+            task = self._repo.get(task_id)
+
+            if task and task.status == TaskStatus.ABORTED:
+                logger.info("Task %s aborted", task_id)
+                return
+                
             logger.exception("Pipeline failed for task %s", task_id)
             self._update(task_id, TaskStatus.ERROR, 0, f"Ошибка: {exc}")
 
@@ -152,6 +177,10 @@ class VerificationService:
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=4)
 
+    def _check_aborted(self, task_id: str):
+        task = self._repo.get(task_id)
+        if task and task.status == TaskStatus.ABORTED:
+            raise Exception("Task aborted")
 
     def _refinement_loop(self, task_id: str, context: dict, stages: list) -> dict:
         """Run analysis → validation → correction up to max_iterations times."""
@@ -159,6 +188,7 @@ class VerificationService:
         target = context["target_score"]
 
         for i in range(max_iter):
+            self._check_aborted(task_id)
             progress = int(20 + (i / max(max_iter - 1, 1)) * 60)
             self._update(
                 task_id, TaskStatus.PROCESSING, progress,

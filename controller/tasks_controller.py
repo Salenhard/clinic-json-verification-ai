@@ -1,9 +1,9 @@
 from flask import Blueprint, jsonify, request
 
 from repository import AbstractTaskRepository
+from service import VerificationService
 
-
-def create_task_blueprint(repo: AbstractTaskRepository) -> Blueprint:
+def create_task_blueprint(repo: AbstractTaskRepository, service: VerificationService) -> Blueprint:
     tasks_bp = Blueprint("tasks", __name__, url_prefix="/api/tasks")
 
     @tasks_bp.get("/<task_id>")
@@ -39,4 +39,15 @@ def create_task_blueprint(repo: AbstractTaskRepository) -> Blueprint:
         except Exception as e:
             return jsonify({"error": str(e)}), 400
 
+    
+
+    @tasks_bp.post("/<task_id>/cancel")
+    def cancel_task(task_id: str):
+        try:
+            service.cancel_task(task_id)
+            return jsonify({"status": "aborted"}), 200
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
+            
     return tasks_bp

@@ -34,29 +34,24 @@ logging.basicConfig(
 
 
 def create_app() -> Flask:
-    """Compose all layers and return a ready Flask application."""
     settings.validate()
 
-    # ── Infrastructure ────────────────────────────────────────────────────────
     genai_client = genai.Client(api_key=settings.gemini_api_key)
     repository = SQLiteTaskRepository(db_path=settings.db_path)
 
-    # ── Service ───────────────────────────────────────────────────────────────
     verification_service = VerificationService(
         repository=repository,
         genai_client=genai_client,
         settings=settings,
     )
 
-    # ── Flask app ─────────────────────────────────────────────────────────────
     app = Flask(__name__)
     CORS(app)
     app.config["MAX_CONTENT_LENGTH"] = settings.max_content_length_bytes
 
-    # ── Register blueprints ───────────────────────────────────────────────────
     app.register_blueprint(health_bp)
     app.register_blueprint(create_verification_blueprint(verification_service))
     app.register_blueprint(ai_list_bp)
-    app.register_blueprint(create_task_blueprint(repository))
-    print(app.url_map)
+    app.register_blueprint(create_task_blueprint(repository, verification_service))
+    
     return app
