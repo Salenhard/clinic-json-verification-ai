@@ -15,6 +15,7 @@ class TaskStatus(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
     COMPLETED = "completed"
+    ABORTED = "aborted"
     ERROR = "error"
 
 
@@ -27,6 +28,7 @@ class Task:
     result: Any = None
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime | None = None
+    json_path: str
 
     def to_dict(self) -> dict:
         return {
@@ -37,4 +39,5 @@ class Task:
             "result": self.result,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "json_path": self.json_path,
         }

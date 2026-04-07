@@ -27,5 +27,6 @@ class AbstractTaskRepository(ABC):
         progress: int,
         message: str,
         result: Any = None,
+        json_path: str,
     ) -> None:
         """Update mutable fields of an existing Task."""

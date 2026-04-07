@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     message    TEXT,
     result     TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT
+    updated_at TEXT,
+    json_path TEXT
 );
 """
 
@@ -73,6 +74,7 @@ class SQLiteTaskRepository(AbstractTaskRepository):
                     task.progress,
                     task.message,
                     task.created_at.isoformat(),
+                    task.json_path
                 ),
             )
         logger.debug("Task created: %s", task.task_id)
@@ -97,6 +99,7 @@ class SQLiteTaskRepository(AbstractTaskRepository):
             result=json.loads(row["result"]) if row["result"] else None,
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+            json_path=row["json_path"],
         )
 
     def update_status(
@@ -107,12 +110,13 @@ class SQLiteTaskRepository(AbstractTaskRepository):
         progress: int,
         message: str,
         result: Any = None,
+        json_path: str,
     ) -> None:
         result_str = json.dumps(result, ensure_ascii=False) if result is not None else None
         with self._connection() as conn:
             conn.execute(
                 """UPDATE tasks
-                   SET status=?, progress=?, message=?, result=?, updated_at=?
+                   SET status=?, progress=?, message=?, result=?, updated_at=?, json_path=?
                    WHERE task_id=?""",
                 (
                     status.value,
@@ -120,6 +124,7 @@ class SQLiteTaskRepository(AbstractTaskRepository):
                     message,
                     result_str,
                     datetime.now().isoformat(),
+                    json_path,
                     task_id,
                 ),
             )
