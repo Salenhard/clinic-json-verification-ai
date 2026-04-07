@@ -79,6 +79,17 @@ class SQLiteTaskRepository(AbstractTaskRepository):
             )
         logger.debug("Task created: %s", task.task_id)
 
+    def delete(self, task_id: str) -> None:
+        task = get_task(task_id)
+        if task.get_status() in (PENDING, PROCESSING):
+            raise Exception("Нельзя удалить задачу в процессе обработки")
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE from tasks where task_id = ?",
+                (task_id,)
+            )
+            conn.commit()
+
     def get(self, task_id: str) -> Task | None:
         with self._connection() as conn:
             row = conn.execute(
