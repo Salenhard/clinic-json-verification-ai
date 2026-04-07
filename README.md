@@ -14,7 +14,7 @@ clinical_validator/
 │   ├── base.py                  # Абстрактный интерфейс (AbstractTaskRepository)
 │   ├── models.py                # Доменная модель Task + TaskStatus
 │   └── sqlite_repository.py    # Конкретная реализация (SQLite + WAL)
-├── pipeline/
+├── pipeline/                   # Сервис для верификации и фикса json
 │   ├── analysis_stage.py
 │   ├── base.py
 │   ├── chunker.py
