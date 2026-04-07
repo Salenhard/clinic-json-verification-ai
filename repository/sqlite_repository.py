@@ -90,6 +90,31 @@ class SQLiteTaskRepository(AbstractTaskRepository):
             )
             conn.commit()
 
+    def get_all(self) -> list[Task]:
+    with self._connection() as conn:
+        rows = conn.execute(
+            """SELECT task_id, status, progress, message, result,
+                      created_at, updated_at, json_path
+               FROM tasks"""
+        ).fetchall()
+
+    tasks = []
+    for row in rows:
+        tasks.append(
+            Task(
+                task_id=row["task_id"],
+                status=TaskStatus(row["status"]),
+                progress=row["progress"],
+                message=row["message"] or "",
+                result=json.loads(row["result"]) if row["result"] else None,
+                created_at=datetime.fromisoformat(row["created_at"]),
+                updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+                json_path=row["json_path"],
+            )
+        )
+
+    return tasks
+
     def get(self, task_id: str) -> Task | None:
         with self._connection() as conn:
             row = conn.execute(
