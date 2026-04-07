@@ -8,6 +8,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+import json
+import os
+
 from config import Settings
 from pipeline import LLMAdapter, LLMAdapterFactory, GeminiAdapter, OpenAICompatibleAdapter, ClaudeAdapter
 from pipeline import (
@@ -127,15 +130,28 @@ class VerificationService:
             context = self._refinement_loop(task_id, context, stages)
             context = stages[4].run(context)
 
+            folder = "results"
+            self._save_result(folder)          
+
             self._update(
                 task_id, TaskStatus.COMPLETED, 100,
                 "Верификация завершена",
                 result=context.get("final_result"),
+                json_path = os.path.join(folder, f"{task_id}.json")
             )
 
         except Exception as exc:
             logger.exception("Pipeline failed for task %s", task_id)
             self._update(task_id, TaskStatus.ERROR, 0, f"Ошибка: {exc}")
+
+    def _save_result(self, folder_name: str) -> None:
+        os.makedirs(folder, exist_ok=True)
+
+            filename = os.path.join(folder, f"{task_id}.json")
+
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=4)
+
 
     def _refinement_loop(self, task_id: str, context: dict, stages: list) -> dict:
         """Run analysis → validation → correction up to max_iterations times."""
@@ -190,6 +206,7 @@ class VerificationService:
         progress: int,
         message: str,
         result: Any = None,
+        json_path: str | None = None
     ) -> None:
         self._repo.update_status(
             task_id,
@@ -197,4 +214,5 @@ class VerificationService:
             progress=progress,
             message=message,
             result=result,
+            json_path=json_path,
         )
