@@ -11,8 +11,8 @@ PDF_MAX_CHARS = 120_000
 
 
 class JsonPreprocessor(BasePipelineStage):
-    def __init__(self, client, model: str = "gemini-2.0-flash", requests_per_minute: int = 15):
-        super().__init__(client, model, requests_per_minute)
+    def __init__(self, adapter, requests_per_minute: int = 15):
+        super().__init__(self, adapter, requests_per_minute)
         self.chunker = TextChunker(max_chars=12_000, overlap_chars=400, min_chunk_chars=300)
 
     def _extract_pdf_text(self, pdf_bytes) -> str:
