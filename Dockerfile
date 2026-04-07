@@ -1,6 +1,5 @@
 FROM python:3.12-slim
 
-RUN useradd --create-home appuser
 WORKDIR /app
 
 COPY requirements.txt .
@@ -8,8 +7,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /data && chown -R appuser:appuser /app /data
-USER appuser
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 5000
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "app:app"]
+
+CMD ["gunicorn", "app:create_app()", \
+     "--workers", "4", \
+     "--worker-class", "gthread", \
+     "--threads", "4", \
+     "--bind", "0.0.0.0:5000", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-"]
