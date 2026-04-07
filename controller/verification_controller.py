@@ -80,6 +80,11 @@ def create_verification_blueprint(service: VerificationService) -> Blueprint:
             llm_provider=request.form.get("llm_provider") or None,
             model=request.form.get("model") or None,
             api_key=request.form.get("api_key") or None,
+            chunk_size=request.form.get("chunk_size") or 12_000,
+            overlap=request.form.get("overlap") or 400,
+            requests_per_minute=request.form.get("requests_per_minute") or 15,
+            target_score=request.form.get("target_score") or 0.9,
+            max_iterations=request.form.get("max_iterations") or 3,
         )
 
         task_id = service.submit(req)

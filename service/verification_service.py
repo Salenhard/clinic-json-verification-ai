@@ -33,7 +33,11 @@ class VerificationRequest:
     model: str | None = None
     llm_provider: str | None = None
     api_key: str | None = None
-
+    chunk_size: int | None = None
+    overlap: int | None = None
+    requests_per_minute: int | None = None
+    target_score: int | None = None
+    max_iterations: int | None = None
 
 class VerificationService:
     """Coordinates the multi-stage AI verification pipeline."""
@@ -109,9 +113,14 @@ class VerificationService:
             "recommendations": req.recommendations,
             "recommendations_bytes": req.recommendations_bytes,
             "recommendations_filename": req.recommendations_filename,
+            "chunk_size": req.chunk_size,
+            "overlap": req.overlap,
+            "max_iterations": req.max_iterations,
+            "target_score": req.target_score,
+            "requests_per_minute": req.requests_per_minute
         }
 
-        stages = self._build_stages(adapter)
+        stages = self._build_stages(adapter, context)
 
         try:
             context = stages[0].run(context)
@@ -130,8 +139,8 @@ class VerificationService:
 
     def _refinement_loop(self, task_id: str, context: dict, stages: list) -> dict:
         """Run analysis → validation → correction up to max_iterations times."""
-        max_iter = self._settings.max_iterations
-        target = self._settings.target_score
+        max_iter = context["max_iterations"]
+        target = context["target_score"]
 
         for i in range(max_iter):
             progress = int(20 + (i / max(max_iter - 1, 1)) * 60)
@@ -159,12 +168,12 @@ class VerificationService:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _build_stages(self, adapter: LLMAdapter) -> list:
+    def _build_stages(self, adapter: LLMAdapter, context: dict) -> list:
         """Instantiate a fresh set of pipeline stages for each job."""
         # Стейджи теперь получают адаптер вместо (client, model)
         kwargs = {
             "adapter": adapter,
-            "requests_per_minute": self._settings.requests_per_minute,
+            "requests_per_minute": context["requests_per_minute"],
         }
         return [
             JsonPreprocessor(**kwargs),
