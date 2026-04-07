@@ -1,0 +1,9 @@
+"""Direct-run entry point (dev only).
+
+Production: use gunicorn or uvicorn — see app.py docstring.
+"""
+
+from app import create_app
+
+if __name__ == "__main__":
+    create_app().run(host="0.0.0.0", port=5000, debug=False)
