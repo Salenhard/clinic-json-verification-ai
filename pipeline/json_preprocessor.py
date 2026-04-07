@@ -11,9 +11,6 @@ PDF_MAX_CHARS = 120_000
 
 
 class JsonPreprocessor(BasePipelineStage):
-    def __init__(self, adapter, requests_per_minute: int = 15):
-        super().__init__(self, adapter, requests_per_minute)
-        self.chunker = TextChunker(max_chars=12_000, overlap_chars=400, min_chunk_chars=300)
 
     def _extract_pdf_text(self, pdf_bytes) -> str:
         import pdfplumber
@@ -37,6 +34,7 @@ class JsonPreprocessor(BasePipelineStage):
         return text
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        self.chunker = TextChunker(max_chars=context["chunk_size"], overlap_chars=context["overlap"], min_chunk_chars=300)
         data = context.get("input_data")
         if not isinstance(data, (dict, list)):
             raise PipelineError("input_data должен быть JSON")
