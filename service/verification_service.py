@@ -10,7 +10,6 @@ from typing import Any
 
 import json
 import os
-
 from config import Settings
 from pipeline import LLMAdapter, LLMAdapterFactory, GeminiAdapter, OpenAICompatibleAdapter, ClaudeAdapter
 from pipeline import (
@@ -43,7 +42,6 @@ class VerificationRequest:
     max_iterations: int | None = None
 
 class VerificationService:
-    """Coordinates the multi-stage AI verification pipeline."""
 
     def __init__(
         self,
@@ -59,7 +57,6 @@ class VerificationService:
         if default_adapter is not None:
             self._default_adapter = default_adapter
         elif genai_client is not None:
-            # Старый путь: оборачиваем genai_client в GeminiAdapter
             self._default_adapter = GeminiAdapter(
                 client=genai_client,
                 model=settings.gemini_model,
@@ -70,8 +67,6 @@ class VerificationService:
             )
         else:
             raise ValueError("Нужен default_adapter или genai_client.")
-
-    # ── Public API ────────────────────────────────────────────────────────────
 
     def submit(self, req: VerificationRequest) -> str:
         """Create a task, start background processing, return task_id."""
@@ -92,8 +87,15 @@ class VerificationService:
 
     def get_task(self, task_id: str) -> Task | None:
         return self._repo.get(task_id)
+    
+    def get_all_tasks(self, page, page_size) -> list[Task]:
+        return self._repo.get_all(page=page, page_size=page_size)
 
-    # ── Adapter resolution ────────────────────────────────────────────────────
+    def delete_task(self, task_id: str) -> None:
+        try:
+            self._repo.delete(task_id)
+        except Exception as e:
+            raise e
 
     def _resolve_adapter(self, req: VerificationRequest) -> LLMAdapter:
         if req.model is not None:
@@ -105,7 +107,6 @@ class VerificationService:
 
         return self._default_adapter
 
-    # ── Pipeline execution (runs in a worker thread) ──────────────────────────
     def _run_pipeline(
         self, task_id: str, req: VerificationRequest, adapter: LLMAdapter
     ) -> None:
@@ -181,8 +182,6 @@ class VerificationService:
                 break
 
         return context
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _build_stages(self, adapter: LLMAdapter, context: dict) -> list:
         """Instantiate a fresh set of pipeline stages for each job."""
