@@ -6,7 +6,7 @@ from .analysis_stage import AnalysisStage
 from .json_validator import JsonValidator
 from .correction_stage import CorrectionStage
 from .finalization_stage import FinalizationStage
-
+from .llm_adapters import LLMAdapter, GeminiAdapter, OpenAICompatibleAdapter, ClaudeAdapter, LLMAdapterFactory
 __all__ = [
     "PipelineError", "BasePipelineStage",
     "RateLimiter", "get_limiter", "configure_limiter",

@@ -77,7 +77,9 @@ def create_verification_blueprint(service: VerificationService) -> Blueprint:
             recommendations=rec_text,
             recommendations_bytes=rec_bytes,
             recommendations_filename=rec_filename,
+            llm_provider=request.form.get("llm_provider") or None,
             model=request.form.get("model") or None,
+            api_key=request.form.get("api_key") or None,
         )
 
         task_id = service.submit(req)
