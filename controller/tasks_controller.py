@@ -1,5 +1,5 @@
-from flask import Blueprint, jsonify, request
-
+from flask import Blueprint, jsonify, request, send_file
+import os
 from repository import AbstractTaskRepository
 from service import VerificationService
 
@@ -50,4 +50,24 @@ def create_task_blueprint(repo: AbstractTaskRepository, service: VerificationSer
         except Exception as e:
             return jsonify({"error": str(e)}), 400
             
+    @tasks_bp.get("/<task_id>/download")
+    def download_result(task_id: str):
+        task = repo.get(task_id)
+
+        if task is None:
+            return jsonify({"error": "Task not found"}), 404
+
+        if not task.json_path:
+            return jsonify({"error": "Result not ready"}), 400
+
+        if not os.path.exists(task.json_path):
+            return jsonify({"error": "File not found"}), 404
+
+        return send_file(
+            task.json_path,
+            as_attachment=True,
+            download_name=f"{task_id}.json",
+            mimetype="application/json"
+        )
+
     return tasks_bp
