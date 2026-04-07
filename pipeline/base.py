@@ -1,4 +1,3 @@
-"""Base class for all pipeline stages."""
 import json
 import logging
 import re
@@ -23,25 +22,38 @@ class BasePipelineStage(ABC):
     MAX_RETRIES = 3
     RETRY_DELAY = 2
     RATE_LIMIT_BACKOFF = 65
-    MAX_OUTPUT_TOKENS = 65536 
+    MAX_OUTPUT_TOKENS = 65536
 
     _SYSTEM_INSTRUCTION = (
         "Ты анализатор текста по клиническим рекомендациям и медицинским стандартам. "
         "Отвечай только валидным JSON без лишних пояснений и markdown-разметки. "
         "Используй только сведения из предоставленного текста — не придумывай данные."
     )
-
     def __init__(
         self,
-        client,
-        model: str = "gemini-2.0-flash",
+        adapter: "LLMAdapter",
         requests_per_minute: int = 15,
     ):
-        self.client = client
-        self.model = model
+        self.adapter = adapter
+        self.model = adapter.model_name  # для логов совместимость
         self.tokens_used = 0
         self._limiter = get_limiter(requests_per_minute)
 
+    def _call_llm(self, prompt: str, system: Optional[str] = None) -> str:
+        self._limiter.acquire()
+        sys_instr = system if system else self._SYSTEM_INSTRUCTION
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                return self.adapter.complete(prompt, system=sys_instr)
+            except Exception as exc:
+                s = str(exc).lower()
+                if "429" in s or "quota" in s or "rate" in s:
+                    logger.warning("%s: rate limit — backoff %ds",
+                                   self.stage_name, self.RATE_LIMIT_BACKOFF)
+                    time.sleep(self.RATE_LIMIT_BACKOFF)
+                elif attempt == self.MAX_RETRIES:
+                    raise
+        raise PipelineError("unreachable")
     # ── JSON helpers ──────────────────────────────────────────────────────────
 
     def _clean_json(self, text: str) -> str:
@@ -63,37 +75,6 @@ class BasePipelineStage(ABC):
         if end == -1 and end_arr == -1:
             return text[start:]
         return text[start: max(end, end_arr) + 1]
-
-    # ── LLM call ──────────────────────────────────────────────────────────────
-
-    def _call_llm(self, prompt: str, system: Optional[str] = None) -> str:
-        self._limiter.acquire()
-        sys_instr = system if system else self._SYSTEM_INSTRUCTION
-        config = genai_types.GenerateContentConfig(
-            temperature=0.1,
-            max_output_tokens=self.MAX_OUTPUT_TOKENS,
-            system_instruction=sys_instr,
-        )
-        try:
-            response = self.client.models.generate_content(
-                model=self.model, contents=prompt, config=config,
-            )
-        except Exception as exc:
-            s = str(exc).lower()
-            if "429" in s or "resource_exhausted" in s or "quota" in s:
-                logger.warning("%s: quota — backing off %ds", self.stage_name, self.RATE_LIMIT_BACKOFF)
-                time.sleep(self.RATE_LIMIT_BACKOFF)
-                response = self.client.models.generate_content(
-                    model=self.model, contents=prompt, config=config,
-                )
-            else:
-                raise
-
-        meta = getattr(response, "usage_metadata", None)
-        if meta:
-            self.tokens_used += getattr(meta, "prompt_token_count", 0)
-            self.tokens_used += getattr(meta, "candidates_token_count", 0)
-        return response.text
 
     # ── JSON repair ───────────────────────────────────────────────────────────
 
