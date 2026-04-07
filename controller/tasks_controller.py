@@ -15,7 +15,7 @@ def create_task_blueprint(repo: AbstractTaskRepository) -> Blueprint:
 
         return jsonify(task.to_dict()), 200
 
-    @tasks_bp.get("")
+    @tasks_bp.get("/")
     def get_tasks():
         page = int(request.args.get("page", 1))
         page_size = int(request.args.get("page_size", 10))

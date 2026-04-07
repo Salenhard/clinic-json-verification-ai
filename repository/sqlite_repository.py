@@ -62,8 +62,8 @@ class SQLiteTaskRepository(AbstractTaskRepository):
         with self._connection() as conn:
             conn.execute(
                 """INSERT INTO tasks
-                   (task_id, status, progress, message, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   (task_id, status, progress, message, created_at, json_path)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     task.task_id,
                     task.status.value,
@@ -138,14 +138,14 @@ class SQLiteTaskRepository(AbstractTaskRepository):
                     json_path=row["json_path"],
                 )
             )
-    
+
         return tasks
 
     def get(self, task_id: str) -> Task | None:
         with self._connection() as conn:
             row = conn.execute(
                 """SELECT task_id, status, progress, message, result,
-                          created_at, updated_at
+                          created_at, updated_at, json_path
                    FROM tasks WHERE task_id = ?""",
                 (task_id,),
             ).fetchone()

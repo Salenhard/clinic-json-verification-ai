@@ -22,7 +22,7 @@ from flask_cors import CORS
 from google import genai
 
 from config import settings
-from controller import health_bp, create_verification_blueprint
+from controller import health_bp, create_verification_blueprint, ai_list_bp, create_task_blueprint
 from repository import SQLiteTaskRepository
 from service import VerificationService
 
@@ -56,5 +56,7 @@ def create_app() -> Flask:
     # ── Register blueprints ───────────────────────────────────────────────────
     app.register_blueprint(health_bp)
     app.register_blueprint(create_verification_blueprint(verification_service))
-
+    app.register_blueprint(ai_list_bp)
+    app.register_blueprint(create_task_blueprint(repository))
+    print(app.url_map)
     return app
