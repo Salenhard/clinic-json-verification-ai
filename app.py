@@ -52,6 +52,6 @@ def create_app() -> Flask:
     app.register_blueprint(health_bp)
     app.register_blueprint(create_verification_blueprint(verification_service))
     app.register_blueprint(ai_list_bp)
-    app.register_blueprint(create_task_blueprint(repository))
-
+    app.register_blueprint(create_task_blueprint(repository, verification_service))
+    
     return app
