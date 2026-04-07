@@ -34,12 +34,10 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 class SQLiteTaskRepository(AbstractTaskRepository):
     """Concrete repository backed by a local SQLite file."""
-
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
         self._init_schema()
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
 
     @contextmanager
     def _connection(self):
@@ -59,8 +57,6 @@ class SQLiteTaskRepository(AbstractTaskRepository):
         with self._connection() as conn:
             conn.executescript(_DDL)
         logger.info("SQLite schema initialised at %s", self._db_path)
-
-    # ── AbstractTaskRepository ────────────────────────────────────────────────
 
     def create(self, task: Task) -> None:
         with self._connection() as conn:
@@ -90,13 +86,44 @@ class SQLiteTaskRepository(AbstractTaskRepository):
             )
             conn.commit()
 
-    def get_all(self) -> list[Task]:
+    def get_all(self, page: int = 1, page_size: int = 10) -> dict:
+    offset = (page - 1) * page_size
+
     with self._connection() as conn:
         rows = conn.execute(
             """SELECT task_id, status, progress, message, result,
                       created_at, updated_at, json_path
-               FROM tasks"""
+               FROM tasks
+               ORDER BY created_at DESC
+               LIMIT ? OFFSET ?""",
+            (page_size, offset),
         ).fetchall()
+
+        total = conn.execute(
+            "SELECT COUNT(*) FROM tasks"
+        ).fetchone()[0]
+
+    tasks = [
+        Task(
+            task_id=row["task_id"],
+            status=TaskStatus(row["status"]),
+            progress=row["progress"],
+            message=row["message"] or "",
+            result=json.loads(row["result"]) if row["result"] else None,
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+            json_path=row["json_path"],
+        )
+        for row in rows
+    ]
+
+    return {
+        "items": tasks,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": (total + page_size - 1) // page_size,
+    }
 
     tasks = []
     for row in rows:
