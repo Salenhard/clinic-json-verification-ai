@@ -10,7 +10,6 @@ from typing import Any
 
 import json
 import os
-
 from config import Settings
 from pipeline import LLMAdapter, LLMAdapterFactory, GeminiAdapter, OpenAICompatibleAdapter, ClaudeAdapter
 from pipeline import (
@@ -91,7 +90,6 @@ class VerificationService:
     
     def get_all_tasks(self, page, page_size) -> list[Task]:
         return self._repo.get_all(page=page, page_size=page_size)
-
 
     def delete_task(self, task_id: str) -> None:
         try:
