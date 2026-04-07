@@ -24,7 +24,6 @@ from repository import AbstractTaskRepository, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class VerificationRequest:
     """Everything the service needs to start a verification job."""
