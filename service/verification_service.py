@@ -116,7 +116,8 @@ class VerificationService:
             "chunk_size": req.chunk_size,
             "overlap": req.overlap,
             "max_iterations": req.max_iterations,
-            "target_score": req.target_score
+            "target_score": req.target_score,
+            "requests_per_minute": req.requests_per_minute
         }
 
         stages = self._build_stages(adapter, context)
