@@ -95,77 +95,77 @@ class AnalysisStage(BasePipelineStage):
         )
 
    @staticmethod
-def _merge_results(results: list) -> dict:
-    all_actions = []
-    all_missing: set[str] = set()
-    all_invalid = []
-    scores = []
-
-    # сбор
-    for r in results:
-        all_actions.extend(r.get("actions", []))
-        all_missing.update(r.get("missing_fields", []))
-        all_invalid.extend(r.get("invalid_fields", []))
-
-        score = r.get("coverage_score")
-        if score is not None:
-            scores.append(float(score))
-
-    # --- ACTIONS: дедуп + разрешение конфликтов ---
-    actions_map = {}
-
-    for act in all_actions:
-        key = (act.get("type"), act.get("path"))
-
-        # при конфликте берём последнее (самое "свежее")
-        actions_map[key] = act
-
-    unique_actions = list(actions_map.values())
-
-    # --- INVALID: дедуп ---
-    seen_invalid = set()
-    unique_invalid = []
-
-    for inv in all_invalid:
-        key = (inv.get("path"), inv.get("reason"))
-        if key not in seen_invalid:
-            seen_invalid.add(key)
-            unique_invalid.append(inv)
-
-    # --- MISSING: фильтр мусора ---
-    # убираем явно невалидные индексы (например > max из actions)
-    valid_indices = set()
-
-    for act in unique_actions:
-        path = act.get("path", "")
-        if path.startswith("["):
-            try:
-                idx = int(path.split("]")[0][1:])
-                valid_indices.add(idx)
-            except:
-                pass
-
-    filtered_missing = []
-
-    for path in all_missing:
-        if path.startswith("["):
-            try:
-                idx = int(path.split("]")[0][1:])
-                # оставляем только те, что реально есть в данных
-                if idx in valid_indices:
-                    filtered_missing.append(path)
-            except:
-                pass
-        else:
-            filtered_missing.append(path)
-
-    return {
-        "actions": sorted(unique_actions, key=lambda x: x.get("path", "")),
-        "missing_fields": sorted(set(filtered_missing)),
-        "invalid_fields": unique_invalid,
-        "coverage_score": round(sum(scores) / len(scores), 3) if scores else 0.0,
-        "overall_comment": f"Проанализировано {len(results)} фрагментов рекомендаций."
-    }
+    def _merge_results(results: list) -> dict:
+        all_actions = []
+        all_missing: set[str] = set()
+        all_invalid = []
+        scores = []
+    
+        # сбор
+        for r in results:
+            all_actions.extend(r.get("actions", []))
+            all_missing.update(r.get("missing_fields", []))
+            all_invalid.extend(r.get("invalid_fields", []))
+    
+            score = r.get("coverage_score")
+            if score is not None:
+                scores.append(float(score))
+    
+        # --- ACTIONS: дедуп + разрешение конфликтов ---
+        actions_map = {}
+    
+        for act in all_actions:
+            key = (act.get("type"), act.get("path"))
+    
+            # при конфликте берём последнее (самое "свежее")
+            actions_map[key] = act
+    
+        unique_actions = list(actions_map.values())
+    
+        # --- INVALID: дедуп ---
+        seen_invalid = set()
+        unique_invalid = []
+    
+        for inv in all_invalid:
+            key = (inv.get("path"), inv.get("reason"))
+            if key not in seen_invalid:
+                seen_invalid.add(key)
+                unique_invalid.append(inv)
+    
+        # --- MISSING: фильтр мусора ---
+        # убираем явно невалидные индексы (например > max из actions)
+        valid_indices = set()
+    
+        for act in unique_actions:
+            path = act.get("path", "")
+            if path.startswith("["):
+                try:
+                    idx = int(path.split("]")[0][1:])
+                    valid_indices.add(idx)
+                except:
+                    pass
+    
+        filtered_missing = []
+    
+        for path in all_missing:
+            if path.startswith("["):
+                try:
+                    idx = int(path.split("]")[0][1:])
+                    # оставляем только те, что реально есть в данных
+                    if idx in valid_indices:
+                        filtered_missing.append(path)
+                except:
+                    pass
+            else:
+                filtered_missing.append(path)
+    
+        return {
+            "actions": sorted(unique_actions, key=lambda x: x.get("path", "")),
+            "missing_fields": sorted(set(filtered_missing)),
+            "invalid_fields": unique_invalid,
+            "coverage_score": round(sum(scores) / len(scores), 3) if scores else 0.0,
+            "overall_comment": f"Проанализировано {len(results)} фрагментов рекомендаций."
+        }
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         json_data = json.dumps(context["original_data"], ensure_ascii=False, indent=2)
