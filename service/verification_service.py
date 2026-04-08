@@ -150,13 +150,14 @@ class VerificationService:
             context = stages[4].run(context)
 
             folder = "results"
-            self._save_result(folder, task_id, context.get("final_result"))
+            final_result = context.get("final_result")
+            self._save_result(folder, task_id, final_result)
 
             self._update(
                 task_id, TaskStatus.COMPLETED, 100,
                 "Верификация завершена",
-                result=context.get("final_result"),
-                json_path = os.path.join(folder, f"{task_id}.json")
+                result=final_result,
+                json_path=os.path.join(folder, f"{task_id}.json"),
             )
 
         except Exception as exc:
@@ -169,10 +170,10 @@ class VerificationService:
             logger.exception("Pipeline failed for task %s", task_id)
             self._update(task_id, TaskStatus.ERROR, 0, f"Ошибка: {exc}")
 
-    def _save_result(self, folder_name: str, file_name: str, result: Any) -> None:
+    def _save_result(self, folder_name: str, task_id: str, result: Any) -> None:
         os.makedirs(folder_name, exist_ok=True)
 
-        filename = os.path.join(folder_name, f"{file_name}.json")
+        filename = os.path.join(folder_name, f"{task_id}.json")
 
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=4)
@@ -186,7 +187,7 @@ class VerificationService:
         """Run analysis → validation → correction up to max_iterations times."""
         max_iter = context["max_iterations"]
         target = context["target_score"]
-        folder = "result"
+
         for i in range(max_iter):
             self._check_aborted(task_id)
             progress = int(20 + (i / max(max_iter - 1, 1)) * 60)
@@ -196,10 +197,9 @@ class VerificationService:
             )
 
             context = stages[1].run(context)   # AnalysisStage
-            self._save_result(folder, f"{task_id} AnalysisStage iter: {i}", context.get("analysis"))
             context = stages[2].run(context)   # JsonValidator
             context = stages[3].run(context)   # CorrectionStage
-            self._save_result(folder, f"{task_id} CorrectionStage iter: {i}", context.get("corrected_data"))
+
             if "corrected_data" in context:
                 context["input_data"] = context["corrected_data"]
                 context["original_data"] = context["corrected_data"]
