@@ -187,7 +187,7 @@ class VerificationService:
         """Run analysis → validation → correction up to max_iterations times."""
         max_iter = context["max_iterations"]
         target = context["target_score"]
-
+        folder = "result"
         for i in range(max_iter):
             self._check_aborted(task_id)
             progress = int(20 + (i / max(max_iter - 1, 1)) * 60)
@@ -197,9 +197,10 @@ class VerificationService:
             )
 
             context = stages[1].run(context)   # AnalysisStage
+            self._save_result(folder, f"{task_id} AnalysisStage", context.get("analysis"))
             context = stages[2].run(context)   # JsonValidator
             context = stages[3].run(context)   # CorrectionStage
-
+            self._save_result(folder, f"{task_id} CorrectionStage", context.get("corrected_data"))
             if "corrected_data" in context:
                 context["input_data"] = context["corrected_data"]
                 context["original_data"] = context["corrected_data"]

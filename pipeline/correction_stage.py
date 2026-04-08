@@ -110,7 +110,6 @@ class CorrectionStage(BasePipelineStage):
                     "new_value": patch_val,
                     "reason": "значение исправлено: critical issue согласно рекомендациям",
                 })
-            # Иначе — не трогаем существующее корректное значение
 
         return result, changelog
 
