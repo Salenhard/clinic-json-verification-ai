@@ -38,18 +38,18 @@ class CorrectionStage(BasePipelineStage):
 
 Верни **полный** исправленный JSON + changelog:
 
-{
-  "corrected_json": { ... полный исправленный документ ... },
+{{
+  "corrected_json": {{ ... полный исправленный документ ... }},
   "changelog": [
-    {
+    {{
       "action": "added|modified",
       "field": "путь.к.полю",
       "old_value": "...",
       "new_value": "...",
       "reason": "..."
-    }
+    }}
   ]
-}
+}}
 """
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -88,7 +88,6 @@ class CorrectionStage(BasePipelineStage):
 
         result = self._execute_with_retry(prompt)
 
-        # FIX: validate that LLM preserved structure
         corrected = result.get("corrected_json")
         if not isinstance(corrected, dict):
             logger.warning("CorrectionStage: LLM returned invalid corrected_json — using original")
