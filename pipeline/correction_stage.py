@@ -73,7 +73,6 @@ class CorrectionStage(BasePipelineStage):
             orig_val = result.get(key)
 
             if key not in result:
-                # Новый ключ — добавляем
                 result[key] = patch_val
                 changelog.append({
                     "action": "added",
@@ -129,8 +128,6 @@ class CorrectionStage(BasePipelineStage):
         critical = self._critical_fields(analysis.get("issues", []))
 
         corrected, changelog = self._apply_patch(original, supplement, critical)
-
-        # Гарантируем, что ни один ключ верхнего уровня не потерян
         if isinstance(original, dict):
             for key in original:
                 if key not in corrected:
