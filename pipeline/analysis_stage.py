@@ -41,19 +41,19 @@ JSON-ДОКУМЕНТ:
 
 Верни ТОЛЬКО валидный JSON:
 {{
-  "completeness_score": 0.0,
+  "completeness_score": 0.85,
   "issues": [
     {{
       "severity": "critical|warning|info",
-      "field": "имя поля или null",
-      "description": "точное описание проблемы с указанием конкретного поля/значения",
-      "suggestion": "точное описание того что нужно сделать"
+      "text_ref": "описание из текста",
+      "current_value": "то что сейчас в JSON",
+      "expected_value": "то что должно быть по КР",
+      "action": "заменить|добавить|удалить"
     }}
   ],
-  "missing_fields": ["поле1", "поле2"],
-  "suggestions": {{"поле": "рекомендуемое значение согласно рекомендациям"}},
-  "overall_comment": "..."
+  "summary": "Краткое резюме: что не так"
 }}
+
 """
     def _build_prompt(self, chunk_text: str, chunk_index: int, total_chunks: int, json_data: str) -> str:
         return self._PROMPT_TEMPLATE.format(
