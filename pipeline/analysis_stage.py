@@ -17,43 +17,74 @@ class AnalysisStage(BasePipelineStage):
 
     # FIX: renamed to _PROMPT_TEMPLATE to match usage; was _PROMPT (unused variable)
     _PROMPT_TEMPLATE = """\
-Задача: проверить, насколько JSON-документ соответствует клиническим рекомендациям и выдать ТОЛЬКО конкретные действия по исправлению.
+ЗАДАЧА:
+Провести структурную проверку JSON-документа на соответствие клиническим рекомендациям и выдать ТОЛЬКО машинно-применимые инструкции для исправления.
 
-JSON-ДОКУМЕНТ:
+ВХОДНЫЕ ДАННЫЕ:
+1. JSON-ДОКУМЕНТ:
 {json_data}
 
-ФРАГМЕНТ КЛИНИЧЕСКИХ РЕКОМЕНДАЦИЙ (часть {chunk_index} из {total_chunks}):
-{chunk_text}
+2. КЛИНИЧЕСКИЕ РЕКОМЕНДАЦИИ:
+{guidelines_text}
 
-Проверь:
-1. Полноту (все ли поля, которые должны быть по рекомендациям, присутствуют)
-2. Корректность значений (соответствуют ли они рекомендациям)
-3. Отсутствующие критически важные данные
-4. Противоречия с рекомендациями
-5. Покрывает ли документ все клинические рекомендации
+ЧТО НУЖНО СДЕЛАТЬ:
+Проанализируй JSON и сравни с рекомендациями. Определи:
+- отсутствующие обязательные поля
+- некорректные значения
+- противоречия
+- неполное покрытие данных
+- лишние или недопустимые поля
 
-Правила вывода:
-- НЕ ссылаться на текст рекомендаций
-- НЕ описывать проблему в общих словах
-- Говорить ТОЛЬКО: что добавить → куда → какое значение
-- Говорить ТОЛЬКО: что исправить → где → старое → новое
-- НЕ требуй замены кириллицы на латиницу или наоборот
+ФОРМАТ ВЫХОДА:
+Верни ТОЛЬКО валидный JSON без пояснений.
 
-Верни ТОЛЬКО валидный JSON:
+Результат должен содержать ТОЛЬКО действия, которые можно автоматически применить:
+
 {{
-  "completeness_score": 0.85,
-  "issues": [
+  "actions": [
     {{
-      "severity": "critical|warning|info",
-      "text_ref": "описание из текста",
-      "current_value": "то что сейчас в JSON",
-      "expected_value": "то что должно быть по КР",
-      "action": "заменить|добавить|удалить"
+      "type": "add",
+      "path": "путь.к.полю",
+      "value": "значение"
+    }},
+    {{
+      "type": "update",
+      "path": "путь.к.полю",
+      "old_value": "старое значение",
+      "new_value": "новое значение"
+    }},
+    {{
+      "type": "remove",
+      "path": "путь.к.полю"
     }}
   ],
-  "summary": "Краткое резюме: что не так"
+  "missing_fields": [
+    "путь.к.полю"
+  ],
+  "invalid_fields": [
+    {{
+      "path": "путь.к.полю",
+      "reason": "конкретная причина"
+    }}
+  ],
+  "coverage_score": 0.0,
+  "overall_comment": "краткий итог без общих рассуждений"
 }}
 
+ТРЕБОВАНИЯ К ДЕЙСТВИЯМ:
+- path указывать в формате JSONPath (например: patient.age, diagnosis.code)
+- value должен быть конкретным (не "указать", а реальное значение)
+- не дублировать действия
+- если поле отсутствует → только add
+- если поле есть, но неверное → только update
+- если поле лишнее → remove
+- не писать текст вне JSON
+
+ЗАПРЕЩЕНО:
+- ссылки на рекомендации
+- объяснения
+- размытые формулировки
+- дублирование
 """
     def _build_prompt(self, chunk_text: str, chunk_index: int, total_chunks: int, json_data: str) -> str:
         return self._PROMPT_TEMPLATE.format(
@@ -65,33 +96,52 @@ JSON-ДОКУМЕНТ:
 
     @staticmethod
     def _merge_results(results: list) -> dict:
-        all_issues = []
+        all_actions = []
         all_missing: set[str] = set()
-        all_suggestions: dict = {}
+        all_invalid = []
         scores = []
 
+        # Сбор данных
         for r in results:
-            all_issues.extend(r.get("issues", []))
+            all_actions.extend(r.get("actions", []))
             all_missing.update(r.get("missing_fields", []))
-            all_suggestions.update(r.get("suggestions", {}))
-            score = r.get("completeness_score")
+            all_invalid.extend(r.get("invalid_fields", []))
+
+            score = r.get("coverage_score")
             if score is not None:
                 scores.append(float(score))
 
-        seen: set[tuple] = set()
-        unique_issues = []
-        for iss in all_issues:
-            key = (iss.get("field"), iss.get("description", "")[:80])
-            if key not in seen:
-                seen.add(key)
-                unique_issues.append(iss)
+        # Дедупликация actions
+        seen_actions: set[tuple] = set()
+        unique_actions = []
+
+        for act in all_actions:
+            key = (
+                act.get("type"),
+                act.get("path"),
+                str(act.get("value")),
+                str(act.get("new_value"))
+            )
+            if key not in seen_actions:
+                seen_actions.add(key)
+                unique_actions.append(act)
+
+        # Дедупликация invalid_fields
+        seen_invalid: set[tuple] = set()
+        unique_invalid = []
+
+        for inv in all_invalid:
+            key = (inv.get("path"), inv.get("reason"))
+            if key not in seen_invalid:
+                seen_invalid.add(key)
+                unique_invalid.append(inv)
 
         return {
-            "completeness_score": round(sum(scores) / len(scores), 3) if scores else 0.0,
-            "issues": unique_issues,
+            "actions": unique_actions,
             "missing_fields": sorted(all_missing),
-            "suggestions": all_suggestions,
-            "overall_comment": f"Проанализировано {len(results)} фрагментов рекомендаций.",
+            "invalid_fields": unique_invalid,
+            "coverage_score": round(sum(scores) / len(scores), 3) if scores else 0.0,
+            "overall_comment": f"Проанализировано {len(results)} фрагментов рекомендаций."
         }
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -109,7 +159,8 @@ JSON-ДОКУМЕНТ:
         logger.info(
             "Analysis: score=%.2f  issues=%d  missing_fields=%d",
             analysis.get("completeness_score", 0),
-            len(analysis.get("issues", [])),
+            len(analysis.get("actions", [])),
             len(analysis.get("missing_fields", [])),
+            len(analysis.get("invalid_fields", [])),
         )
         return context
