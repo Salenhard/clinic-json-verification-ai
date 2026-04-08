@@ -21,30 +21,35 @@ class CorrectionStage(BasePipelineStage):
     MAX_OUTPUT_TOKENS = 32768
 
     _PROMPT = """\
-Задача: исправить и дополнить JSON-документ согласно клиническим рекомендациям.
+Задача: исправить JSON-документ, используя ТОЛЬКО отчёт о проблемах.
 
 ОРИГИНАЛЬНЫЙ JSON:
 {original_json}
 
-КЛИНИЧЕСКИЕ РЕКОМЕНДАЦИИ (фрагмент):
-{recommendations}
-
-НАЙДЕННЫЕ ПРОБЛЕМЫ:
+ОТЧЁТ О ПРОБЛЕМАХ:
 {issues_text}
 
 СТРОГИЕ ПРАВИЛА:
 1. Верни документ с ТОЧНО ТАКОЙ ЖЕ СТРУКТУРОЙ — те же ключи верхнего уровня.
 2. НЕ удаляй существующие поля.
 3. НЕ переименовывай ключи.
-4. Если исправить нечего — верни оригинальный JSON без изменений.
+4. НЕ добавляй новые поля, если это не указано в issues как critical.
+5. Если исправить нечего — верни оригинальный JSON без изменений.
 
 Верни **полный** исправленный JSON + changelog:
-{{
-  "corrected_json": {{ ... полный исправленный документ ... }},
+
+{
+  "corrected_json": { ... полный исправленный документ ... },
   "changelog": [
-    {{"action": "added|modified", "field": "путь.к.полю", "old_value": "...", "new_value": "...", "reason": "..."}}
+    {
+      "action": "added|modified",
+      "field": "путь.к.полю",
+      "old_value": "...",
+      "new_value": "...",
+      "reason": "..."
+    }
   ]
-}}
+}
 """
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -76,15 +81,8 @@ class CorrectionStage(BasePipelineStage):
 
         original_json = json.dumps(original, ensure_ascii=False, indent=2)
 
-        rec_text = context.get("recommendations_full_text", "")
-        if not rec_text and context.get("recommendation_chunks"):
-            rec_text = context["recommendation_chunks"][0].text
-        if len(rec_text) > 15_000:
-            rec_text = rec_text[:15_000]
-
         prompt = self._PROMPT.format(
             original_json=original_json,
-            recommendations=rec_text,
             issues_text="\n".join(issues_lines) or "Проблем не найдено.",
         )
 
