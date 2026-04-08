@@ -24,8 +24,8 @@ class AnalysisStage(BasePipelineStage):
 1. JSON-ДОКУМЕНТ:
 {json_data}
 
-2. КЛИНИЧЕСКИЕ РЕКОМЕНДАЦИИ:
-{guidelines_text}
+=== ФРАГМЕНТ РЕКОМЕНДАЦИЙ (часть {chunk_index} из {total_chunks}) ===
+{chunk_text}
 
 ЧТО НУЖНО СДЕЛАТЬ:
 Проанализируй JSON и сравни с рекомендациями. Определи:
