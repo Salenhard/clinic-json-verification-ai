@@ -170,9 +170,9 @@ class VerificationService:
             self._update(task_id, TaskStatus.ERROR, 0, f"Ошибка: {exc}")
 
     def _save_result(self, folder_name: str, file_name: str, result: Any) -> None:
-        os.makedirs(folder, exist_ok=True)
+        os.makedirs(folder_name, exist_ok=True)
 
-        filename = os.path.join(folder, f"{file_name}.json")
+        filename = os.path.join(folder_name, f"{file_name}.json")
 
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=4)
