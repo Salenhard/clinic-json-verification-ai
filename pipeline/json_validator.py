@@ -136,13 +136,13 @@ class JsonValidator(BasePipelineStage):
                         "issues": [],
                     }
 
-                existing_keys: set[tuple] = {
-                    (i.get("field", ""), i.get("description", "")[:80])
+                existing_keys: set[str] = {
+                    i.get("field", "")
                     for i in issues_by_method[method]["issues"]
                 }
 
                 for iss in schema_issues:
-                    key = (iss.get("field", ""), iss.get("description", "")[:80])
+                    key = iss.get("field", "")
                     if key not in existing_keys:
                         issues_by_method[method]["issues"].append(iss)
                         existing_keys.add(key)

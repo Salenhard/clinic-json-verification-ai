@@ -1,6 +1,6 @@
 """Stage 2 — Analyse JSON against clinical guidelines.
 
-Key design for weak models:
+Key design for weak models (Gemini Flash, etc.):
   - Objects are pre-filtered per chunk by source_section/source_number
     so the LLM sees only relevant objects, not the full 100+ list.
   - The prompt is simplified: fewer instructions, clearer output format.
@@ -94,23 +94,36 @@ def _filter_objects_for_chunk(
 
 
 def _compute_deterministic_score(analysis: dict, total_objects: int) -> float:
-    """Compute completeness score from issue counts — no LLM needed."""
+    """Compute completeness score from issue counts — no LLM needed.
+
+    Score = 1.0 - (objects_with_critical / total + objects_with_warning / total * 0.3)
+    Normalized so even 159/159 objects with issues gives ~0.0, not -22.
+    """
     if total_objects == 0:
         return 1.0
 
-    n_critical = 0
-    n_warning = 0
+    methods_critical = set()
+    methods_warning = set()
 
     for entry in analysis.get("object_issues", []):
+        method = entry.get("method", "")
         for iss in entry.get("issues", []):
             sev = iss.get("severity", "info")
             if sev == "critical":
-                n_critical += 1
+                methods_critical.add(method)
             elif sev == "warning":
-                n_warning += 1
+                methods_warning.add(method)
+
+    # Objects with only warnings (no critical)
+    warning_only = methods_warning - methods_critical
 
     n_missing = len(analysis.get("missing_methods", []))
-    penalty = n_critical * 0.1 + n_warning * 0.03 + n_missing * 0.05
+    effective_total = total_objects + n_missing
+
+    if effective_total == 0:
+        return 1.0
+
+    penalty = (len(methods_critical) + len(warning_only) * 0.3 + n_missing * 0.5) / effective_total
     return round(max(0.0, 1.0 - penalty), 3)
 
 

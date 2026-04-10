@@ -1,12 +1,11 @@
 """Stage 4 — Correct and supplement the JSON using LLM.
 
-  - Works with object_issues structure from AnalysisStage/JsonValidator.
-  - Extracts only the objects that have issues (not the full 159-item list),
-    avoiding truncation and keeping prompts focused.
-  - Handles both list and dict documents (list bug from v1 is fixed).
-  - After LLM correction, merges corrected objects back into the full list
-    by object_index, preserving all unchanged objects.
-  - Guard: if LLM changes the number of returned objects, falls back to original.
+v3 fixes after real-world test:
+  - Deterministic Python fixes applied FIRST (Cyrillic evidence_level,
+    enum normalization) — no LLM needed for these.
+  - Remaining LLM-fixable issues sent in BATCHES of ≤15 objects
+    so weak models don't choke on 159 objects at once.
+  - After batched LLM calls, results merged back into full document.
 """
 import json
 import logging
@@ -17,52 +16,79 @@ from .base import BasePipelineStage
 
 logger = logging.getLogger(__name__)
 
+# ── Deterministic fixes (no LLM needed) ─────────────────────────────────────
+
+_CYRILLIC_TO_LATIN = str.maketrans("АВС", "ABC")
+
+
+def _apply_deterministic_fixes(data: list | dict) -> tuple[list | dict, list[dict]]:
+    """Fix issues that don't require LLM: Cyrillic evidence_level, etc.
+
+    Returns (fixed_data, changelog).
+    """
+    changelog = []
+
+    objects = data if isinstance(data, list) else [data]
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+
+        # Fix Cyrillic evidence_level
+        el = obj.get("evidence_level")
+        if el and any(c in el for c in "АВС"):
+            new_el = el.translate(_CYRILLIC_TO_LATIN)
+            changelog.append({
+                "method": obj.get("method", "?"),
+                "field": "evidence_level",
+                "old_value": el,
+                "new_value": new_el,
+                "reason": "Кириллица заменена на латиницу (А→A, В→B, С→C)",
+            })
+            obj["evidence_level"] = new_el
+
+    return data, changelog
+
+
+# ── LLM correction ──────────────────────────────────────────────────────────
+
 _SCHEMA = """\
 Каждый объект описывает один клинический метод со следующими полями:
   method, method_type, diagnosis, patient_group, goal, conditions,
   contraindications, timing, dosage, recommendation_type,
-  evidence_level (только латинские A|B|C|D), evidence_grade (1-5),
-  source_quote, source_section, source_number, source_page, source_filename.\
+  evidence_level (A|B|C|D), evidence_grade (1-5),
+  source_quote, source_section, source_number.\
 """
 
 _PROMPT = """\
-Ты — редактор клинических данных. Исправь и дополни JSON-объекты \
+Ты — редактор клинических данных. Исправь JSON-объекты \
 строго на основе клинических рекомендаций.
-
-=== СХЕМА ===
-{schema}
 
 === КЛИНИЧЕСКИЕ РЕКОМЕНДАЦИИ ===
 {recommendations}
 
-=== ОБЪЕКТЫ С ПРОБЛЕМАМИ ===
+=== ОБЪЕКТЫ С ПРОБЛЕМАМИ ({batch_info}) ===
 {objects_json}
 
 === НАЙДЕННЫЕ ПРОБЛЕМЫ ===
 {issues_text}
 
 === ПРАВИЛА ===
-1. Верни ровно столько объектов, сколько получил — тот же порядок.
+1. Верни ровно {n_objects} объектов — тот же порядок.
 2. НЕ удаляй и НЕ переименовывай поля.
-3. НЕ изменяй поля без проблем — только те, что указаны в списке проблем.
-4. Заполняй null/пустые значения ТОЛЬКО данными из рекомендаций выше.
-5. evidence_level — исправляй кириллицу на латиницу (А→A, В→B, С→C).
-6. Если поле исправить невозможно (нет данных в рекомендациях) — оставь как есть.
+3. Исправляй только поля из списка проблем.
+4. Заполняй null ТОЛЬКО данными из рекомендаций выше.
+5. Если данных нет — оставь как есть.
 
-Верни ТОЛЬКО валидный JSON без markdown:
+Верни ТОЛЬКО валидный JSON (без markdown):
 {{
-  "corrected_objects": [ ... ],
+  "corrected_objects": [ ... {n_objects} объектов ... ],
   "changelog": [
-    {{
-      "method": "название метода",
-      "field": "имя поля",
-      "old_value": "...",
-      "new_value": "...",
-      "reason": "обоснование из рекомендаций"
-    }}
+    {{"method": "...", "field": "...", "old_value": "...", "new_value": "...", "reason": "..."}}
   ]
 }}
 """
+
+BATCH_SIZE = 15  # Max objects per LLM call
 
 
 class CorrectionStage(BasePipelineStage):
@@ -74,63 +100,142 @@ class CorrectionStage(BasePipelineStage):
         analysis = context["analysis"]
         object_issues: list[dict] = analysis.get("object_issues", [])
 
-        # Filter to entries that actually have critical or warning issues
-        actionable = [
-            entry for entry in object_issues
-            if any(
-                i.get("severity") in ("critical", "warning")
-                for i in entry.get("issues", [])
+        # ── Step 1: Deterministic fixes (no LLM) ────────────────────────
+        corrected = deepcopy(original)
+        corrected, det_changelog = _apply_deterministic_fixes(corrected)
+
+        if det_changelog:
+            logger.info(
+                "CorrectionStage: %d deterministic fixes applied (Cyrillic etc.)",
+                len(det_changelog),
             )
-        ]
 
-        if not actionable:
-            logger.info("CorrectionStage: no actionable issues — skipping LLM call")
-            context["corrected_data"] = deepcopy(original)
-            context["changelog"] = []
+        # ── Step 2: Filter issues that still need LLM ────────────────────
+        # After deterministic fixes, remove evidence_level Cyrillic issues
+        det_fixed_fields = {
+            (c["method"], c["field"]) for c in det_changelog
+        }
+
+        llm_actionable = []
+        for entry in object_issues:
+            remaining_issues = [
+                iss for iss in entry.get("issues", [])
+                if iss.get("severity") in ("critical", "warning")
+                and (entry.get("method", ""), iss.get("field", "")) not in det_fixed_fields
+            ]
+            if remaining_issues:
+                llm_actionable.append({
+                    **entry,
+                    "issues": remaining_issues,
+                })
+
+        if not llm_actionable:
+            logger.info("CorrectionStage: all issues fixed deterministically, no LLM needed")
+            context["corrected_data"] = corrected
+            context["changelog"] = det_changelog
             return context
 
-        # Build the subset of objects to send to LLM
-        is_list = isinstance(original, list)
-        objects_to_fix: list[dict] = []
-        index_map: list[int] = []   # position in objects_to_fix → index in original
+        # ── Step 3: Batch LLM correction ─────────────────────────────────
+        is_list = isinstance(corrected, list)
+        all_changelog = list(det_changelog)
 
-        for entry in actionable:
+        # Build (object, index, issues) tuples
+        fix_items = []
+        for entry in llm_actionable:
             idx = entry.get("object_index")
-            if is_list and idx is not None and 0 <= idx < len(original):
-                objects_to_fix.append(original[idx])
-                index_map.append(idx)
-            elif isinstance(original, dict):
-                # dict document: treat the whole doc as one object
-                objects_to_fix = [original]
-                index_map = []
-                break
+            if is_list and idx is not None and 0 <= idx < len(corrected):
+                fix_items.append((corrected[idx], idx, entry))
 
-        if not objects_to_fix:
-            logger.warning("CorrectionStage: no valid object_index found — using original")
-            context["corrected_data"] = deepcopy(original)
-            context["changelog"] = []
+        if not fix_items:
+            logger.warning("CorrectionStage: no valid indices for LLM — skipping")
+            context["corrected_data"] = corrected
+            context["changelog"] = all_changelog
             return context
 
-        # Format issues for prompt
-        issues_lines: list[str] = []
-        for entry in actionable:
-            method = entry.get("method", "?")
-            for iss in entry.get("issues", []):
-                sev = iss.get("severity", "info").upper()
-                field = iss.get("field") or "—"
-                desc = iss.get("description", "")
-                sugg = iss.get("suggestion", "")
-                issues_lines.append(f"[{sev}] {method} / {field}: {desc}")
-                if sugg:
-                    issues_lines.append(f"  → {sugg}")
+        # Get recommendation text
+        rec_text = self._get_recommendation_text(context, [item[0] for item in fix_items])
 
-        objects_json = json.dumps(objects_to_fix, ensure_ascii=False, indent=2)
+        # Process in batches
+        for batch_start in range(0, len(fix_items), BATCH_SIZE):
+            batch = fix_items[batch_start:batch_start + BATCH_SIZE]
+            batch_num = batch_start // BATCH_SIZE + 1
+            total_batches = (len(fix_items) + BATCH_SIZE - 1) // BATCH_SIZE
 
+            objects_for_llm = [item[0] for item in batch]
+            index_map = [item[1] for item in batch]
+            batch_issues = [item[2] for item in batch]
+
+            # Format issues
+            issues_lines = []
+            for entry in batch_issues:
+                method = entry.get("method", "?")
+                for iss in entry.get("issues", []):
+                    sev = iss.get("severity", "info").upper()
+                    field = iss.get("field") or "—"
+                    desc = iss.get("description", "")
+                    issues_lines.append(f"[{sev}] {method} / {field}: {desc}")
+
+            objects_json = json.dumps(objects_for_llm, ensure_ascii=False, indent=2)
+
+            prompt = _PROMPT.format(
+                recommendations=rec_text,
+                objects_json=objects_json,
+                issues_text="\n".join(issues_lines),
+                batch_info=f"пакет {batch_num}/{total_batches}, {len(batch)} объектов",
+                n_objects=len(batch),
+            )
+
+            logger.info(
+                "CorrectionStage: LLM batch %d/%d — %d objects",
+                batch_num, total_batches, len(batch),
+            )
+
+            try:
+                result = self._execute_with_retry(prompt)
+            except Exception as e:
+                logger.error("CorrectionStage: batch %d failed: %s — skipping", batch_num, e)
+                continue
+
+            llm_objects = result.get("corrected_objects")
+
+            if not isinstance(llm_objects, list) or len(llm_objects) != len(batch):
+                logger.warning(
+                    "CorrectionStage: batch %d — LLM returned %s (expected list[%d]) — skipping",
+                    batch_num,
+                    f"list[{len(llm_objects)}]" if isinstance(llm_objects, list) else type(llm_objects).__name__,
+                    len(batch),
+                )
+                continue
+
+            # Merge batch results
+            pristine = context.get("pristine_original", corrected)
+            for pos, orig_idx in enumerate(index_map):
+                llm_obj = llm_objects[pos]
+                # Guard: restore dropped fields
+                ref_obj = pristine[orig_idx] if isinstance(pristine, list) and orig_idx < len(pristine) else corrected[orig_idx]
+                for key in ref_obj:
+                    if key not in llm_obj:
+                        llm_obj[key] = ref_obj[key]
+                corrected[orig_idx] = llm_obj
+
+            all_changelog.extend(result.get("changelog", []))
+
+        context["corrected_data"] = corrected
+        context["changelog"] = all_changelog
+
+        logger.info(
+            "CorrectionStage: total %d changelog entries (%d deterministic + %d LLM)",
+            len(all_changelog), len(det_changelog), len(all_changelog) - len(det_changelog),
+        )
+        return context
+
+    def _get_recommendation_text(self, context: dict, objects: list[dict]) -> str:
+        """Extract relevant recommendation text for the given objects."""
         rec_text = context.get("recommendations_full_text", "")
-        # Собираем релевантные чанки по source_section объектов с проблемами
+
         if context.get("recommendation_chunks") and len(rec_text) > 15_000:
             relevant_sections = set()
-            for obj in objects_to_fix:
+            for obj in objects:
                 s = obj.get("source_section") or ""
                 if s:
                     relevant_sections.add(s.lower().strip())
@@ -139,8 +244,7 @@ class CorrectionStage(BasePipelineStage):
                 chunks = context["recommendation_chunks"]
                 relevant_texts = []
                 for chunk in chunks:
-                    chunk_lower = chunk.text.lower()
-                    if any(sec in chunk_lower for sec in relevant_sections):
+                    if any(sec in chunk.text.lower() for sec in relevant_sections):
                         relevant_texts.append(chunk.text)
                 if relevant_texts:
                     rec_text = "\n\n---\n\n".join(relevant_texts)
@@ -148,66 +252,4 @@ class CorrectionStage(BasePipelineStage):
         if len(rec_text) > 20_000:
             rec_text = rec_text[:20_000]
 
-        prompt = _PROMPT.format(
-            schema=_SCHEMA,
-            recommendations=rec_text,
-            objects_json=objects_json,
-            issues_text="\n".join(issues_lines),
-        )
-
-        result = self._execute_with_retry(prompt)
-
-        corrected_objects = result.get("corrected_objects")
-
-        # Validate LLM response type and length
-        if not isinstance(corrected_objects, list):
-            logger.warning(
-                "CorrectionStage: LLM returned invalid corrected_objects (type %s) — using original",
-                type(corrected_objects).__name__,
-            )
-            context["corrected_data"] = deepcopy(original)
-            context["changelog"] = []
-            return context
-
-        if len(corrected_objects) != len(objects_to_fix):
-            logger.warning(
-                "CorrectionStage: LLM changed object count (%d → %d) — using original",
-                len(objects_to_fix), len(corrected_objects),
-            )
-            context["corrected_data"] = deepcopy(original)
-            context["changelog"] = []
-            return context
-
-        # Merge corrected objects back into the full document
-        if is_list:
-            corrected_full = deepcopy(original)
-            # Для восстановления дропнутых полей берём pristine_original
-            pristine = context.get("pristine_original", original)
-            for pos, original_idx in enumerate(index_map):
-                corrected_obj = corrected_objects[pos]
-                # Guard: ensure no fields were dropped by LLM
-                pristine_obj = pristine[original_idx] if isinstance(pristine, list) and original_idx < len(pristine) else original[original_idx]
-                for key in pristine_obj:
-                    if key not in corrected_obj:
-                        logger.warning(
-                            "CorrectionStage: LLM dropped field '%s' in '%s' — restoring",
-                            key, pristine_obj.get("method", f"#{original_idx}"),
-                        )
-                        corrected_obj[key] = pristine_obj[key]
-                corrected_full[original_idx] = corrected_obj
-        else:
-            # dict document: single-object case
-            corrected_full = corrected_objects[0]
-            for key in original:
-                if key not in corrected_full:
-                    logger.warning("CorrectionStage: LLM dropped key '%s' — restoring", key)
-                    corrected_full[key] = original[key]
-
-        context["corrected_data"] = corrected_full
-        context["changelog"] = result.get("changelog", [])
-
-        logger.info(
-            "CorrectionStage: corrected %d objects, %d changelog entries",
-            len(objects_to_fix), len(context["changelog"]),
-        )
-        return context
+        return rec_text
