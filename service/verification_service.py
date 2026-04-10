@@ -197,10 +197,10 @@ class VerificationService:
             )
 
             context = stages[1].run(context)   # AnalysisStage
-            self._save_result(folder, f"{task_id} AnalysisStage", context.get("analysis"))
+            self._save_result(folder, f"{task_id} AnalysisStage iter: {i}", context.get("analysis"))
             context = stages[2].run(context)   # JsonValidator
             context = stages[3].run(context)   # CorrectionStage
-            self._save_result(folder, f"{task_id} CorrectionStage", context.get("corrected_data"))
+            self._save_result(folder, f"{task_id} CorrectionStage iter: {i}", context.get("corrected_data"))
             if "corrected_data" in context:
                 context["input_data"] = context["corrected_data"]
                 context["original_data"] = context["corrected_data"]
