@@ -117,7 +117,7 @@ class BasePipelineStage(ABC):
 
     # ── Chunked execution ─────────────────────────────────────────────────────
 
-    CHUNK_WORKERS = 3
+    CHUNK_WORKERS = 1
 
     def _execute_over_chunks(
         self,
