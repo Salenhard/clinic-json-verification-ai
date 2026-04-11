@@ -195,11 +195,11 @@ class VerificationService:
                 f"Итерация {i + 1}: анализ и дополнение",
             )
 
+            context["_iteration"] = i + 1
             context = stages[1].run(context)   # AnalysisStage
             self._save_result(folder, f"{task_id} AnalysisStage iter:{i}", context["analysis"])
             context = stages[3].run(context)   # CorrectionStage
-            self._save_result(folder, f"{task_id} AnalysisStage iter:{i}", context["corrected_data"])
-
+            self._save_result(folder, f"{task_id} CorrectionStage iter:{i}", context["corrected_data"])
             if "corrected_data" in context:
                 context["input_data"] = context["corrected_data"]
                 context["original_data"] = context["corrected_data"]

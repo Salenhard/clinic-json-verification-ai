@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Dict, Any
 
@@ -12,14 +13,25 @@ class FinalizationStage(BasePipelineStage):
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         changelog = context.get("changelog", [])
-        supplement = context.get("analysis", {}).get("supplement_json", {})
+
+        # Считаем реальные изменения из changelog, а не из патча
+        action_counts = Counter(e.get("action") for e in changelog)
+        fields_added = action_counts.get("added", 0)
+        fields_modified = action_counts.get("modified", 0)
+        records_added = action_counts.get("added_record", 0)
+
+        # Сколько итераций прошло
+        iterations_done = context.get("_iteration", 1)
 
         context["final_result"] = {
             "document": context["corrected_data"],
 
             "supplement": {
-                "updates_applied": len(supplement.get("updates", [])),
-                "additions_applied": len(supplement.get("additions", [])),
+                "fields_added": fields_added,
+                "fields_modified": fields_modified,
+                "records_added": records_added,
+                "total_changes": len(changelog),
+                "iterations": iterations_done,
             },
 
             "changelog": changelog,
@@ -31,9 +43,7 @@ class FinalizationStage(BasePipelineStage):
         }
 
         logger.info(
-            "Finalization: changes=%d  updates=%d  additions=%d",
-            len(changelog),
-            len(supplement.get("updates", [])),
-            len(supplement.get("additions", [])),
+            "Finalization: fields_added=%d  fields_modified=%d  records_added=%d  iterations=%d",
+            fields_added, fields_modified, records_added, iterations_done,
         )
         return context

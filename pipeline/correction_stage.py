@@ -8,9 +8,9 @@ supplement_json имеет строгий формат:
 
 Алгоритм:
   1. updates  — находит запись по match-ключу, делает deep-merge changes.
-               Перезаписывает только null/пустые поля, ИЛИ поля из critical issues.
+               Перезаписывает только null/пустые поля.
   2. additions — добавляет новые записи (если такой method ещё нет).
-  3. Возвращает дополненный документ + changelog.
+  3. Возвращает дополненный документ + накопленный changelog с меткой итерации.
 """
 import logging
 from copy import deepcopy
@@ -35,14 +35,6 @@ class CorrectionStage(BasePipelineStage):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _critical_fields(issues: List[dict]) -> Set[str]:
-        return {
-            iss["field"]
-            for iss in issues
-            if iss.get("severity") == "critical" and iss.get("field")
-        }
-
-    @staticmethod
     def _find_record(records: List[dict], match: dict) -> int:
         """Возвращает индекс первой записи, удовлетворяющей всем условиям match."""
         for i, rec in enumerate(records):
@@ -54,12 +46,12 @@ class CorrectionStage(BasePipelineStage):
         self,
         record: dict,
         changes: dict,
-        critical: Set[str],
         path: str = "",
     ) -> tuple:
         """
         Применяет changes к record.
         Возвращает (обновлённая запись, список changelog-записей).
+        Перезаписывает только null/пустые поля — непустые не трогает.
         """
         result = dict(record)
         log: List[dict] = []
@@ -69,7 +61,6 @@ class CorrectionStage(BasePipelineStage):
             old_val = result.get(key)
 
             if key not in result:
-                # Поля не было — добавляем
                 result[key] = new_val
                 log.append({"action": "added", "field": full_path,
                              "old_value": None, "new_value": new_val,
@@ -77,25 +68,17 @@ class CorrectionStage(BasePipelineStage):
 
             elif isinstance(old_val, dict) and isinstance(new_val, dict):
                 # Рекурсия для вложенных объектов
-                merged, sub_log = self._merge_changes(old_val, new_val, critical, full_path)
+                merged, sub_log = self._merge_changes(old_val, new_val, full_path)
                 result[key] = merged
                 log.extend(sub_log)
 
             elif _is_empty(old_val):
-                # Пустое / null — заполняем
                 result[key] = new_val
                 log.append({"action": "added", "field": full_path,
                              "old_value": old_val, "new_value": new_val,
                              "reason": "заполнено пустое поле"})
 
-            elif key in critical or full_path in critical:
-                # Critical issue — исправляем даже непустое
-                result[key] = new_val
-                log.append({"action": "modified", "field": full_path,
-                             "old_value": old_val, "new_value": new_val,
-                             "reason": "исправлено: critical issue"})
-
-            # Иначе — не трогаем корректное непустое значение
+            # Непустое значение — не трогаем
 
         return result, log
 
@@ -105,6 +88,7 @@ class CorrectionStage(BasePipelineStage):
         original = context["original_data"]
         analysis = context["analysis"]
         supplement = analysis.get("supplement_json") or {}
+        iteration = context.get("_iteration", 1)
 
         updates = supplement.get("updates") or []
         additions = supplement.get("additions") or []
@@ -112,12 +96,12 @@ class CorrectionStage(BasePipelineStage):
         if not updates and not additions:
             logger.info("CorrectionStage: supplement_json пустой — пропускаем")
             context["corrected_data"] = deepcopy(original)
-            context["changelog"] = []
             return context
 
-        # issues больше не генерируются — все изменения из supplement_json применяются
-        critical: Set[str] = set()
-        changelog: List[dict] = []
+        # Накапливаем changelog через итерации — не перезаписываем
+        changelog: List[dict] = list(context.get("changelog") or [])
+        iter_added = 0
+        iter_updated = 0
 
         # ── Работаем с массивом записей ──────────────────────────────────────
         if isinstance(original, list):
@@ -138,11 +122,13 @@ class CorrectionStage(BasePipelineStage):
                     continue
 
                 record_id = corrected[idx].get(self.ID_KEY, f"[{idx}]")
-                merged, sub_log = self._merge_changes(corrected[idx], changes, critical)
+                merged, sub_log = self._merge_changes(corrected[idx], changes)
                 corrected[idx] = merged
                 for entry in sub_log:
                     entry["record"] = record_id
+                    entry["iteration"] = iteration
                 changelog.extend(sub_log)
+                iter_updated += len(sub_log)
 
             # 2. Добавляем новые записи
             existing_ids = {r.get(self.ID_KEY) for r in corrected}
@@ -157,17 +143,20 @@ class CorrectionStage(BasePipelineStage):
                     "action": "added_record",
                     "record": rec_id,
                     "reason": "новая запись из рекомендаций",
+                    "iteration": iteration,
                 })
+                iter_added += 1
 
         # ── Работаем с объектом (dict) ───────────────────────────────────────
         elif isinstance(original, dict):
-            corrected, changelog = self._merge_changes(
+            corrected, iter_log = self._merge_changes(
                 deepcopy(original),
-                # Для dict-документа объединяем все changes из updates
                 {k: v for upd in updates for k, v in (upd.get("changes") or {}).items()},
-                critical,
             )
-            # additions для dict не применимы — логируем предупреждение
+            for entry in iter_log:
+                entry["iteration"] = iteration
+            changelog.extend(iter_log)
+            iter_updated = len(iter_log)
             if additions:
                 logger.warning(
                     "CorrectionStage: документ — dict, %d additions проигнорированы", len(additions)
@@ -180,9 +169,7 @@ class CorrectionStage(BasePipelineStage):
         context["changelog"] = changelog
 
         logger.info(
-            "CorrectionStage: updates=%d  additions=%d  changes=%d",
-            len(updates),
-            len(additions),
-            len(changelog),
+            "CorrectionStage [iter %d]: field_changes=%d  added_records=%d  changelog_total=%d",
+            iteration, iter_updated, iter_added, len(changelog),
         )
         return context
