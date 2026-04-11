@@ -7,10 +7,13 @@ supplement_json имеет строгий формат:
   }
 
 Алгоритм:
-  1. updates  — находит запись по match-ключу, применяет ВСЕ changes
-               (LLM целенаправленно выбрал запись через match — доверяем).
+  1. updates  — находит запись по match-ключу, применяет changes (force=True).
+               Списки объединяются (union), не заменяются целиком.
   2. additions — добавляет новые записи только если такой method ещё нет.
   3. Возвращает дополненный документ + накопленный changelog с меткой итерации.
+
+Гарды:
+  - fracture_class не применяется к записям с диагнозом вывих (без перелома).
 """
 import logging
 from copy import deepcopy
@@ -22,9 +25,32 @@ logger = logging.getLogger(__name__)
 
 _EMPTY_VALUES = (None, "", [], {})
 
+# Поля классификации переломов — не применять к чистым вывихам
+_FRACTURE_CLASS_FIELDS = {"fracture_class", "target.fracture_class"}
+
 
 def _is_empty(v: Any) -> bool:
     return v is None or v in _EMPTY_VALUES
+
+
+def _is_dislocation_only(record: dict) -> bool:
+    """True если запись относится к вывиху без перелома."""
+    diag = (record.get("diagnosis") or "").lower()
+    return "вывих" in diag and "перелом" not in diag
+
+
+def _merge_lists(old: list, new: list) -> tuple:
+    """
+    Объединяет два списка без дублирования.
+    Возвращает (merged, added_items).
+    """
+    result = list(old)
+    added = []
+    for item in new:
+        if item not in result:
+            result.append(item)
+            added.append(item)
+    return result, added
 
 
 class CorrectionStage(BasePipelineStage):
@@ -36,7 +62,6 @@ class CorrectionStage(BasePipelineStage):
 
     @staticmethod
     def _find_record(records: List[dict], match: dict) -> int:
-        """Возвращает индекс первой записи, удовлетворяющей всем условиям match."""
         for i, rec in enumerate(records):
             if all(rec.get(k) == v for k, v in match.items()):
                 return i
@@ -51,8 +76,9 @@ class CorrectionStage(BasePipelineStage):
     ) -> tuple:
         """
         Применяет changes к record.
-        force=True  → перезаписывает любые значения (используется для updates).
-        force=False → только null/пустые (используется при merge additions).
+        force=True  → применяет все изменения (updates).
+                      Списки объединяются через union, не заменяются.
+        force=False → только null/пустые поля (additions merge).
         Возвращает (обновлённая запись, список changelog-записей).
         """
         result = dict(record)
@@ -62,20 +88,38 @@ class CorrectionStage(BasePipelineStage):
             full_path = f"{path}.{key}" if path else key
             old_val = result.get(key)
 
+            # Guard: fracture_class не применяем к чистым вывихам
+            if full_path in _FRACTURE_CLASS_FIELDS and _is_dislocation_only(record):
+                logger.debug(
+                    "CorrectionStage: пропускаем %s для вывиха '%s'",
+                    full_path, record.get(self.ID_KEY, "?"),
+                )
+                continue
+
             if key not in result:
+                # Поля нет — добавляем в любом режиме
                 result[key] = new_val
                 log.append({"action": "added", "field": full_path,
                              "old_value": None, "new_value": new_val,
                              "reason": "новое поле из рекомендаций"})
 
             elif isinstance(old_val, dict) and isinstance(new_val, dict):
-                # Рекурсия для вложенных объектов (наследует force)
+                # Рекурсия для вложенных объектов
                 merged, sub_log = self._apply_changes(old_val, new_val, force, full_path)
                 result[key] = merged
                 log.extend(sub_log)
 
+            elif isinstance(old_val, list) and isinstance(new_val, list):
+                # Списки всегда объединяем (union), независимо от force
+                merged_list, added_items = _merge_lists(old_val, new_val)
+                if added_items:
+                    result[key] = merged_list
+                    log.append({"action": "modified", "field": full_path,
+                                 "old_value": old_val, "new_value": merged_list,
+                                 "reason": f"добавлено {len(added_items)} элементов в список"})
+
             elif force:
-                # updates: всегда применяем если значение изменилось
+                # Скалярное поле — обновляем если значение изменилось
                 if old_val != new_val:
                     action = "modified" if not _is_empty(old_val) else "added"
                     result[key] = new_val
@@ -84,7 +128,7 @@ class CorrectionStage(BasePipelineStage):
                                  "reason": "обновлено по рекомендациям"})
 
             elif _is_empty(old_val):
-                # additions merge: только пустые поля
+                # Нет force — только пустые скалярные поля
                 result[key] = new_val
                 log.append({"action": "added", "field": full_path,
                              "old_value": old_val, "new_value": new_val,
@@ -100,7 +144,7 @@ class CorrectionStage(BasePipelineStage):
         supplement = analysis.get("supplement_json") or {}
         iteration = context.get("_iteration", 1)
 
-        updates = supplement.get("updates") or []
+        updates   = supplement.get("updates")   or []
         additions = supplement.get("additions") or []
 
         if not updates and not additions:
@@ -117,9 +161,9 @@ class CorrectionStage(BasePipelineStage):
         if isinstance(original, list):
             corrected = [deepcopy(r) for r in original]
 
-            # 1. updates — force=True: применяем все изменения
+            # 1. updates — force=True
             for upd in updates:
-                match = upd.get("match")
+                match   = upd.get("match")
                 changes = upd.get("changes") or {}
                 if not match or not changes:
                     continue
@@ -133,7 +177,7 @@ class CorrectionStage(BasePipelineStage):
                 merged, sub_log = self._apply_changes(corrected[idx], changes, force=True)
                 corrected[idx] = merged
                 for entry in sub_log:
-                    entry["record"] = record_id
+                    entry["record"]    = record_id
                     entry["iteration"] = iteration
                 changelog.extend(sub_log)
                 iter_field_changes += len(sub_log)
@@ -148,9 +192,9 @@ class CorrectionStage(BasePipelineStage):
                 corrected.append(deepcopy(new_rec))
                 existing_ids.add(rec_id)
                 changelog.append({
-                    "action": "added_record",
-                    "record": rec_id,
-                    "reason": "новая запись из рекомендаций",
+                    "action":    "added_record",
+                    "record":    rec_id,
+                    "reason":    "новая запись из рекомендаций",
                     "iteration": iteration,
                 })
                 iter_records_added += 1
@@ -170,7 +214,7 @@ class CorrectionStage(BasePipelineStage):
             corrected = deepcopy(original)
 
         context["corrected_data"] = corrected
-        context["changelog"] = changelog
+        context["changelog"]      = changelog
 
         logger.info(
             "CorrectionStage [iter %d]: field_changes=%d  records_added=%d  changelog_total=%d",
