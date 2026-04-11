@@ -186,7 +186,7 @@ class VerificationService:
     def _refinement_loop(self, task_id: str, context: dict, stages: list) -> dict:
         """Run analysis → correction up to max_iterations times."""
         max_iter = context["max_iterations"]
-
+        folder = "results"
         for i in range(max_iter):
             self._check_aborted(task_id)
             progress = int(20 + (i / max(max_iter - 1, 1)) * 60)
@@ -196,7 +196,9 @@ class VerificationService:
             )
 
             context = stages[1].run(context)   # AnalysisStage
+            self._save_result(folder, f"{task_id} AnalysisStage iter:{i}", context["analysis"])
             context = stages[3].run(context)   # CorrectionStage
+            self._save_result(folder, f"{task_id} AnalysisStage iter:{i}", context["corrected_data"])
 
             if "corrected_data" in context:
                 context["input_data"] = context["corrected_data"]
