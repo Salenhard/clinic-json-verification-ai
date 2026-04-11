@@ -11,28 +11,29 @@ class FinalizationStage(BasePipelineStage):
     stage_name = "stage5_finalization"
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        analysis = context.get("analysis", {})
+        changelog = context.get("changelog", [])
+        supplement = context.get("analysis", {}).get("supplement_json", {})
 
         context["final_result"] = {
             "document": context["corrected_data"],
 
-            "validation": {
-                "completeness_score": analysis.get("completeness_score", 0.0),
-                "issues": context.get("validation_issues", []),
-                "overall_comment": analysis.get("overall_comment", ""),
+            "supplement": {
+                "updates_applied": len(supplement.get("updates", [])),
+                "additions_applied": len(supplement.get("additions", [])),
             },
 
-            "changelog": context.get("changelog", []),
-            
+            "changelog": changelog,
+
             "meta": {
                 "validated_at": datetime.now(timezone.utc).isoformat(),
-                "note": "JSON проверен и дополнен согласно клиническим рекомендациям.",
+                "note": "JSON дополнен согласно клиническим рекомендациям.",
             },
         }
 
         logger.info(
-            "Finalization: score=%.2f  changes=%d",
-            analysis.get("completeness_score", 0.0),
-            len(context.get("changelog", [])),
+            "Finalization: changes=%d  updates=%d  additions=%d",
+            len(changelog),
+            len(supplement.get("updates", [])),
+            len(supplement.get("additions", [])),
         )
         return context

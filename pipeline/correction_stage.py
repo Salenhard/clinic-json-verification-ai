@@ -1,145 +1,188 @@
-"""Stage 4 — Supplement and correct the JSON using the analysis patch.
+"""Stage 4 — Apply supplement_json patch to the input document.
 
-Основной путь: берёт `analysis.supplement_json` (патч, созданный на этапе анализа)
-и делает deep-merge в оригинальный JSON — без дополнительного LLM-вызова.
+supplement_json имеет строгий формат:
+  {
+    "updates":   [{"match": {"method": "..."}, "changes": {...}}, ...],
+    "additions": [{ полная запись }, ...]
+  }
 
-Правила применения патча:
-  • Новые ключи (отсутствующие в оригинале) — добавляются всегда.
-  • Существующие null / "" / [] — заполняются значением из патча.
-  • Существующие непустые значения — перезаписываются ТОЛЬКО если поле
-    помечено как critical в analysis.issues.
-  • Структура верхнего уровня оригинала сохраняется (ключи не удаляются).
+Алгоритм:
+  1. updates  — находит запись по match-ключу, делает deep-merge changes.
+               Перезаписывает только null/пустые поля, ИЛИ поля из critical issues.
+  2. additions — добавляет новые записи (если такой method ещё нет).
+  3. Возвращает дополненный документ + changelog.
 """
 import logging
 from copy import deepcopy
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set
 
 from .base import BasePipelineStage
 
 logger = logging.getLogger(__name__)
 
-_EMPTY = (None, "", [], {})
+_EMPTY_VALUES = (None, "", [], {})
 
 
 def _is_empty(v: Any) -> bool:
-    return v in _EMPTY or v is None
+    return v is None or v in _EMPTY_VALUES
 
 
 class CorrectionStage(BasePipelineStage):
     stage_name = "stage4_correction"
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
+    ID_KEY = "method"  # ключ для поиска записи в массиве
+
+    # ── helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _critical_fields(issues: list) -> Set[str]:
-        """Возвращает множество полей с severity=critical из анализа."""
+    def _critical_fields(issues: List[dict]) -> Set[str]:
         return {
             iss["field"]
             for iss in issues
             if iss.get("severity") == "critical" and iss.get("field")
         }
 
-    def _apply_patch(
+    @staticmethod
+    def _find_record(records: List[dict], match: dict) -> int:
+        """Возвращает индекс первой записи, удовлетворяющей всем условиям match."""
+        for i, rec in enumerate(records):
+            if all(rec.get(k) == v for k, v in match.items()):
+                return i
+        return -1
+
+    def _merge_changes(
         self,
-        original: Any,
-        patch: Any,
+        record: dict,
+        changes: dict,
         critical: Set[str],
         path: str = "",
-    ) -> Tuple[Any, List[dict]]:
+    ) -> tuple:
         """
-        Рекурсивно применяет patch к original.
-        Возвращает (обновлённый объект, список записей changelog).
+        Применяет changes к record.
+        Возвращает (обновлённая запись, список changelog-записей).
         """
-        changelog: List[dict] = []
+        result = dict(record)
+        log: List[dict] = []
 
-        if not isinstance(patch, dict) or not isinstance(original, dict):
-            # Для скалярных/списочных узлов — просто заменяем если пусто или critical
-            if _is_empty(original) or path in critical:
-                if original != patch:
-                    changelog.append({
-                        "action": "modified" if not _is_empty(original) else "added",
-                        "field": path,
-                        "old_value": original,
-                        "new_value": patch,
-                        "reason": "critical issue" if path in critical else "пустое поле заполнено из анализа",
-                    })
-                return patch, changelog
-            return original, changelog
-
-        result = deepcopy(original)
-
-        for key, patch_val in patch.items():
+        for key, new_val in changes.items():
             full_path = f"{path}.{key}" if path else key
-            orig_val = result.get(key)
+            old_val = result.get(key)
 
             if key not in result:
-                result[key] = patch_val
-                changelog.append({
-                    "action": "added",
-                    "field": full_path,
-                    "old_value": None,
-                    "new_value": patch_val,
-                    "reason": "отсутствующее поле добавлено согласно рекомендациям",
-                })
+                # Поля не было — добавляем
+                result[key] = new_val
+                log.append({"action": "added", "field": full_path,
+                             "old_value": None, "new_value": new_val,
+                             "reason": "новое поле из рекомендаций"})
 
-            elif isinstance(orig_val, dict) and isinstance(patch_val, dict):
+            elif isinstance(old_val, dict) and isinstance(new_val, dict):
                 # Рекурсия для вложенных объектов
-                merged, sub_log = self._apply_patch(orig_val, patch_val, critical, full_path)
+                merged, sub_log = self._merge_changes(old_val, new_val, critical, full_path)
                 result[key] = merged
-                changelog.extend(sub_log)
+                log.extend(sub_log)
 
-            elif _is_empty(orig_val):
+            elif _is_empty(old_val):
                 # Пустое / null — заполняем
-                result[key] = patch_val
-                changelog.append({
-                    "action": "added",
-                    "field": full_path,
-                    "old_value": orig_val,
-                    "new_value": patch_val,
-                    "reason": "пустое поле заполнено согласно рекомендациям",
-                })
+                result[key] = new_val
+                log.append({"action": "added", "field": full_path,
+                             "old_value": old_val, "new_value": new_val,
+                             "reason": "заполнено пустое поле"})
 
-            elif full_path in critical or key in critical:
-                # Critical issue — исправляем даже непустое значение
-                result[key] = patch_val
-                changelog.append({
-                    "action": "modified",
-                    "field": full_path,
-                    "old_value": orig_val,
-                    "new_value": patch_val,
-                    "reason": "значение исправлено: critical issue согласно рекомендациям",
-                })
+            elif key in critical or full_path in critical:
+                # Critical issue — исправляем даже непустое
+                result[key] = new_val
+                log.append({"action": "modified", "field": full_path,
+                             "old_value": old_val, "new_value": new_val,
+                             "reason": "исправлено: critical issue"})
 
-        return result, changelog
+            # Иначе — не трогаем корректное непустое значение
+
+        return result, log
 
     # ── Stage entry point ────────────────────────────────────────────────────
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         original = context["original_data"]
         analysis = context["analysis"]
-        supplement = analysis.get("supplement_json", {})
+        supplement = analysis.get("supplement_json") or {}
 
-        if not isinstance(supplement, dict) or not supplement:
+        updates = supplement.get("updates") or []
+        additions = supplement.get("additions") or []
+
+        if not updates and not additions:
             logger.info("CorrectionStage: supplement_json пустой — пропускаем")
             context["corrected_data"] = deepcopy(original)
             context["changelog"] = []
             return context
 
-        critical = self._critical_fields(analysis.get("issues", []))
+        # issues больше не генерируются — все изменения из supplement_json применяются
+        critical: Set[str] = set()
+        changelog: List[dict] = []
 
-        corrected, changelog = self._apply_patch(original, supplement, critical)
-        if isinstance(original, dict):
-            for key in original:
-                if key not in corrected:
-                    logger.warning("CorrectionStage: ключ '%s' пропал — восстанавливаем", key)
-                    corrected[key] = original[key]
+        # ── Работаем с массивом записей ──────────────────────────────────────
+        if isinstance(original, list):
+            corrected = [deepcopy(r) for r in original]
+
+            # 1. Применяем updates
+            for upd in updates:
+                match = upd.get("match")
+                changes = upd.get("changes") or {}
+                if not match or not changes:
+                    continue
+
+                idx = self._find_record(corrected, match)
+                if idx == -1:
+                    logger.warning(
+                        "CorrectionStage: запись match=%s не найдена — пропускаем", match
+                    )
+                    continue
+
+                record_id = corrected[idx].get(self.ID_KEY, f"[{idx}]")
+                merged, sub_log = self._merge_changes(corrected[idx], changes, critical)
+                corrected[idx] = merged
+                for entry in sub_log:
+                    entry["record"] = record_id
+                changelog.extend(sub_log)
+
+            # 2. Добавляем новые записи
+            existing_ids = {r.get(self.ID_KEY) for r in corrected}
+            for new_rec in additions:
+                rec_id = new_rec.get(self.ID_KEY)
+                if rec_id and rec_id in existing_ids:
+                    logger.debug("CorrectionStage: addition '%s' уже есть — пропускаем", rec_id)
+                    continue
+                corrected.append(deepcopy(new_rec))
+                existing_ids.add(rec_id)
+                changelog.append({
+                    "action": "added_record",
+                    "record": rec_id,
+                    "reason": "новая запись из рекомендаций",
+                })
+
+        # ── Работаем с объектом (dict) ───────────────────────────────────────
+        elif isinstance(original, dict):
+            corrected, changelog = self._merge_changes(
+                deepcopy(original),
+                # Для dict-документа объединяем все changes из updates
+                {k: v for upd in updates for k, v in (upd.get("changes") or {}).items()},
+                critical,
+            )
+            # additions для dict не применимы — логируем предупреждение
+            if additions:
+                logger.warning(
+                    "CorrectionStage: документ — dict, %d additions проигнорированы", len(additions)
+                )
+        else:
+            logger.warning("CorrectionStage: неподдерживаемый тип документа — пропускаем")
+            corrected = deepcopy(original)
 
         context["corrected_data"] = corrected
         context["changelog"] = changelog
 
         logger.info(
-            "CorrectionStage: применено %d изменений (%d critical полей)",
+            "CorrectionStage: updates=%d  additions=%d  changes=%d",
+            len(updates),
+            len(additions),
             len(changelog),
-            len(critical),
         )
         return context

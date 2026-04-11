@@ -184,32 +184,31 @@ class VerificationService:
             raise Exception("Task aborted")
 
     def _refinement_loop(self, task_id: str, context: dict, stages: list) -> dict:
-        """Run analysis → validation → correction up to max_iterations times."""
+        """Run analysis → correction up to max_iterations times."""
         max_iter = context["max_iterations"]
-        target = context["target_score"]
-        folder = "result"
+
         for i in range(max_iter):
             self._check_aborted(task_id)
             progress = int(20 + (i / max(max_iter - 1, 1)) * 60)
             self._update(
                 task_id, TaskStatus.PROCESSING, progress,
-                f"Итерация {i + 1}: анализ и исправление",
+                f"Итерация {i + 1}: анализ и дополнение",
             )
 
             context = stages[1].run(context)   # AnalysisStage
-            self._save_result(folder, f"{task_id} AnalysisStage iter: {i}", context.get("analysis"))
-            context = stages[2].run(context)   # JsonValidator
             context = stages[3].run(context)   # CorrectionStage
-            self._save_result(folder, f"{task_id} CorrectionStage iter: {i}", context.get("corrected_data"))
+
             if "corrected_data" in context:
                 context["input_data"] = context["corrected_data"]
                 context["original_data"] = context["corrected_data"]
 
-            score = context.get("analysis", {}).get("completeness_score", 0.0)
-            logger.info("Iteration %d/%d — score: %.2f", i + 1, max_iter, score)
+            sup = context.get("analysis", {}).get("supplement_json", {})
+            updates = len(sup.get("updates", []))
+            additions = len(sup.get("additions", []))
+            logger.info("Iteration %d/%d — updates=%d additions=%d", i + 1, max_iter, updates, additions)
 
-            if score >= target:
-                self._update(task_id, TaskStatus.PROCESSING, 80, "Достигнута достаточная полнота")
+            if updates == 0 and additions == 0:
+                self._update(task_id, TaskStatus.PROCESSING, 80, "Патч пустой — документ полный")
                 break
 
         return context
