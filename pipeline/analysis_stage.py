@@ -16,7 +16,7 @@ CorrectionStage применяет патч напрямую — без LLM-вы
 import concurrent.futures
 import json
 import logging
-from copy import deepcopy
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import BasePipelineStage
@@ -24,16 +24,37 @@ from .chunker import Chunk
 
 logger = logging.getLogger(__name__)
 
+# Минимальная доля записей в которых поле должно присутствовать
+# чтобы считаться обязательным
+_REQUIRED_FIELD_THRESHOLD = 0.80
+
+
+def _compute_required_fields(records: List[dict]) -> List[str]:
+    """Вычисляет список полей присутствующих в ≥80% записей."""
+    if not records:
+        return []
+    total = len(records)
+    counts = Counter()
+    for r in records:
+        if isinstance(r, dict):
+            for k in r:
+                counts[k] += 1
+    return [f for f, c in counts.items() if c / total >= _REQUIRED_FIELD_THRESHOLD]
+
+
+def _best_template_record(records: List[dict], required: List[str]) -> dict:
+    """Возвращает запись с наибольшим числом заполненных required-полей."""
+    def score(r):
+        return sum(1 for f in required if r.get(f) not in (None, "", [], {}))
+    return max((r for r in records if isinstance(r, dict)), key=score, default={})
+
 
 def _filter_objects_for_chunk(
     objects: List[dict], chunk_text: str
 ) -> Tuple[List[dict], List[int]]:
     """
     Возвращает (отфильтрованные объекты, исходные индексы).
-    Объект считается релевантным если source_section / source_number / method
-    встречается в тексте чанка.
-    Fallback — пустой список (не все объекты): чанк всё равно запускается
-    для генерации additions на основе текста рекомендаций.
+    Fallback — пустой список (чанк всё равно запускается для генерации additions).
     """
     chunk_lower = chunk_text.lower()
     filtered: List[dict] = []
@@ -66,13 +87,11 @@ class AnalysisStage(BasePipelineStage):
     MAX_OUTPUT_TOKENS = 32768
     CHUNK_WORKERS = 3
 
-    # Ключ для идентификации записей (можно переопределить в подклассе)
     RECORD_ID_KEY = "method"
 
     # Шаблон промпта. Плейсхолдеры:
     #   {id_key}, {json_data}, {chunk_index}, {total_chunks},
-    #   {chunk_text}, {existing_methods}
-    # Двойные {{ }} — литеральные фигурные скобки.
+    #   {chunk_text}, {existing_methods}, {record_template}
     PROMPT_TEMPLATE = """\
 Задача: проверить JSON-документ на соответствие клиническим рекомендациям \
 и сформировать СТРУКТУРИРОВАННЫЙ патч для его дополнения.
@@ -89,16 +108,20 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
   match — объект для поиска записи по полю "{id_key}" (точное совпадение).
   changes — поля которые нужно добавить или исправить согласно рекомендациям.
 - additions: НОВЫЕ записи которых НЕТ в списке СУЩЕСТВУЮЩИХ ЗАПИСЕЙ ниже.
-  Каждая запись должна иметь те же поля что и записи в JSON-ДОКУМЕНТЕ.
+  Каждая addition должна быть КЛИНИЧЕСКОЙ РЕКОМЕНДАЦИЕЙ — не определением термина.
+  Каждая addition должна иметь ВСЕ поля из ШАБЛОНА ЗАПИСИ ниже.
 
 ПРАВИЛА:
 1. В updates.match используй ТОЛЬКО значения "{id_key}" из JSON-ДОКУМЕНТА выше.
 2. В changes указывай поля с проблемами (null / пустые / некорректные / неполные).
 3. В additions добавляй ТОЛЬКО записи которых нет в СУЩЕСТВУЮЩИХ ЗАПИСЯХ.
 4. Все значения строго из клинических рекомендаций — не придумывай.
-5. НЕ добавляй поле если оно семантически не применимо к записи \
-(например fracture_class не применимо к записям о вывихах без перелома).
+5. НЕ добавляй поле если оно семантически не применимо к записи.
 6. Если поле уже заполнено корректным значением — не включай его в changes.
+7. НЕ добавляй глоссарные записи (определения терминов, классификации без действия).
+
+ШАБЛОН ЗАПИСИ (все additions должны иметь эти поля):
+{record_template}
 
 СУЩЕСТВУЮЩИЕ ЗАПИСИ В ДОКУМЕНТЕ (полный список "{id_key}" — НЕ добавляй их повторно):
 {existing_methods}
@@ -111,7 +134,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
        "changes": {{"поле": "новое значение согласно рекомендациям"}}}}
     ],
     "additions": [
-      {{"{id_key}": "Название нового метода", "...": "..."}}
+      {{"{id_key}": "Название новой рекомендации", "method_type": "...", "...": "..."}}
     ]
   }}
 }}"""
@@ -125,6 +148,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         total_chunks: int,
         json_data: str,
         existing_methods: str,
+        record_template: str,
     ) -> str:
         return self.PROMPT_TEMPLATE.format(
             id_key=self.RECORD_ID_KEY,
@@ -133,6 +157,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
             total_chunks=total_chunks,
             chunk_text=chunk_text,
             existing_methods=existing_methods,
+            record_template=record_template,
         )
 
     # ── Merge helpers ─────────────────────────────────────────────────────────
@@ -155,7 +180,6 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
 
     @staticmethod
     def _merge_supplements(a: dict, b: dict) -> dict:
-        """Объединяет два supplement_json без дублирования."""
         merged_updates: List[dict] = list(a.get("updates") or [])
         merged_additions: List[dict] = list(a.get("additions") or [])
 
@@ -211,12 +235,11 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         chunk: Chunk,
         all_objects: List[dict],
         existing_methods: str,
+        record_template: str,
         total_chunks: int,
     ) -> Optional[dict]:
-        """Фильтрует объекты для чанка, строит промпт, вызывает LLM."""
         filtered, _ = _filter_objects_for_chunk(all_objects, chunk.text)
 
-        # Убираем служебный _object_index перед передачей в LLM
         clean = [
             {k: v for k, v in obj.items() if k != "_object_index"}
             for obj in filtered
@@ -231,7 +254,8 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         )
 
         prompt = self._build_prompt(
-            chunk.text, chunk.index, total_chunks, json_data, existing_methods
+            chunk.text, chunk.index, total_chunks,
+            json_data, existing_methods, record_template,
         )
 
         try:
@@ -247,7 +271,18 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         all_objects: List[dict] = data if isinstance(data, list) else [data]
         chunks: List[Chunk] = context["recommendation_chunks"]
 
-        # Компактный список всех существующих method-ов для промпта
+        # Вычисляем обязательные поля и шаблон из оригинального документа
+        required_fields = _compute_required_fields(all_objects)
+        template_record = _best_template_record(all_objects, required_fields)
+
+        # Сохраняем в context для CorrectionStage
+        context["_required_fields"] = required_fields
+        context["_record_template"] = template_record
+
+        # Шаблон для промпта — полный JSON-объект
+        record_template = json.dumps(template_record, ensure_ascii=False, indent=2)
+
+        # Список всех существующих method для промпта
         existing_methods = "\n".join(
             f"  - {r.get(self.RECORD_ID_KEY, '')}"
             for r in all_objects
@@ -262,7 +297,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
             futures = {
                 executor.submit(
                     self._process_chunk,
-                    chunk, all_objects, existing_methods, len(chunks),
+                    chunk, all_objects, existing_methods, record_template, len(chunks),
                 ): chunk
                 for chunk in chunks
             }
@@ -279,9 +314,10 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         context["analysis"] = {"supplement_json": supplement}
 
         logger.info(
-            "Analysis: supplement(updates=%d, additions=%d)  chunks=%d/%d",
+            "Analysis: supplement(updates=%d, additions=%d)  chunks=%d/%d  required_fields=%d",
             len(supplement.get("updates", [])),
             len(supplement.get("additions", [])),
             len(valid_results), len(chunks),
+            len(required_fields),
         )
         return context

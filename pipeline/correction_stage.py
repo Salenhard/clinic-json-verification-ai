@@ -202,13 +202,29 @@ class CorrectionStage(BasePipelineStage):
                 changelog.extend(sub_log)
                 iter_field_changes += len(sub_log)
 
-            # 2. additions — только если метода ещё нет
+            # 2. additions — только если метода ещё нет и запись валидна
+            required_fields = context.get("_required_fields") or []
             existing_ids = {r.get(self.ID_KEY) for r in corrected}
             for new_rec in additions:
                 rec_id = new_rec.get(self.ID_KEY)
                 if rec_id and rec_id in existing_ids:
                     logger.debug("CorrectionStage: '%s' уже есть — пропускаем", rec_id)
                     continue
+
+                # Валидация: запись должна иметь ≥70% обязательных полей
+                if required_fields:
+                    filled = sum(
+                        1 for f in required_fields
+                        if new_rec.get(f) not in (None, "", [], {})
+                    )
+                    coverage = filled / len(required_fields)
+                    if coverage < 0.70:
+                        logger.warning(
+                            "CorrectionStage: '%s' отклонена — покрытие полей %.0f%% < 70%%",
+                            rec_id, coverage * 100,
+                        )
+                        continue
+
                 corrected.append(deepcopy(new_rec))
                 existing_ids.add(rec_id)
                 changelog.append({
