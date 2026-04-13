@@ -1,12 +1,12 @@
 """Stage 2 — Analyse JSON against clinical guidelines.
 
 Для каждого чанка рекомендаций фильтрует только релевантные объекты документа
-(по source_section / source_number / method), формирует патч supplement_json.
+(по source_section / source_number / id_field), формирует патч supplement_json.
 
 LLM возвращает ТОЛЬКО supplement_json:
   {
     "supplement_json": {
-      "updates":   [{"match": {"method": "..."}, "changes": {...}}],
+      "updates":   [{"match": {"<id_field>": "..."}, "changes": {...}}],
       "additions": [{ ...полная запись... }]
     }
   }
@@ -24,8 +24,6 @@ from .chunker import Chunk
 
 logger = logging.getLogger(__name__)
 
-# Минимальная доля записей в которых поле должно присутствовать
-# чтобы считаться обязательным
 _REQUIRED_FIELD_THRESHOLD = 0.80
 
 
@@ -50,11 +48,12 @@ def _best_template_record(records: List[dict], required: List[str]) -> dict:
 
 
 def _filter_objects_for_chunk(
-    objects: List[dict], chunk_text: str
+    objects: List[dict], chunk_text: str, id_key: str
 ) -> Tuple[List[dict], List[int]]:
     """
     Возвращает (отфильтрованные объекты, исходные индексы).
-    Fallback — пустой список (чанк всё равно запускается для генерации additions).
+    Матчинг по source_section / source_number / id_key.
+    Fallback — пустой список.
     """
     chunk_lower = chunk_text.lower()
     filtered: List[dict] = []
@@ -63,16 +62,16 @@ def _filter_objects_for_chunk(
     for idx, obj in enumerate(objects):
         if not isinstance(obj, dict):
             continue
-        section = (obj.get("source_section") or "").strip().lower()
-        number  = (obj.get("source_number")  or "").strip()
-        method  = (obj.get("method")          or "").strip().lower()
+        section  = (obj.get("source_section") or "").strip().lower()
+        number   = (obj.get("source_number")  or "").strip()
+        id_value = (obj.get(id_key)           or "").strip().lower()
 
         matched = False
         if section and section in chunk_lower:
             matched = True
         elif number and number in chunk_text:
             matched = True
-        elif method and len(method) > 5 and method in chunk_lower:
+        elif id_value and len(id_value) > 5 and id_value in chunk_lower:
             matched = True
 
         if matched:
@@ -87,9 +86,6 @@ class AnalysisStage(BasePipelineStage):
     MAX_OUTPUT_TOKENS = 32768
     CHUNK_WORKERS = 3
 
-    # Шаблон промпта. Плейсхолдеры:
-    #   {id_key}, {json_data}, {chunk_index}, {total_chunks},
-    #   {chunk_text}, {existing_methods}, {record_template}
     PROMPT_TEMPLATE = """\
 Задача: проверить JSON-документ на соответствие клиническим рекомендациям \
 и сформировать СТРУКТУРИРОВАННЫЙ патч для его дополнения.
@@ -122,7 +118,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
 {record_template}
 
 СУЩЕСТВУЮЩИЕ ЗАПИСИ В ДОКУМЕНТЕ (полный список "{id_key}" — НЕ добавляй их повторно):
-{existing_methods}
+{existing_ids}
 
 Верни ТОЛЬКО валидный JSON (без markdown) — только ключ supplement_json:
 {{
@@ -132,7 +128,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
        "changes": {{"поле": "новое значение согласно рекомендациям"}}}}
     ],
     "additions": [
-      {{"{id_key}": "Название новой рекомендации", ...}}
+      {{"{id_key}": "Название новой рекомендации", "...": "..."}}
     ]
   }}
 }}"""
@@ -145,16 +141,17 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         chunk_index: int,
         total_chunks: int,
         json_data: str,
-        existing_methods: str,
+        existing_ids: str,
         record_template: str,
+        id_key: str,
     ) -> str:
         return self.PROMPT_TEMPLATE.format(
-            id_key=context.get("_id_field"),
+            id_key=id_key,
             json_data=json_data,
             chunk_index=chunk_index + 1,
             total_chunks=total_chunks,
             chunk_text=chunk_text,
-            existing_methods=existing_methods,
+            existing_ids=existing_ids,
             record_template=record_template,
         )
 
@@ -176,9 +173,9 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
                 result[k] = v
         return result
 
-
     @staticmethod
-    def _merge_supplements(a: dict, b: dict) -> dict:
+    def _merge_supplements(a: dict, b: dict, id_key: str) -> dict:
+        """Объединяет два supplement_json без дублирования."""
         merged_updates: List[dict] = list(a.get("updates") or [])
         merged_additions: List[dict] = list(a.get("additions") or [])
 
@@ -198,7 +195,6 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
                 existing_matches[key] = len(merged_updates)
                 merged_updates.append(u)
 
-        id_key = context.get("_id_field")
         existing_ids = {r.get(id_key) for r in merged_additions}
         for rec in (b.get("additions") or []):
             if rec.get(id_key) not in existing_ids:
@@ -220,11 +216,11 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         return {"updates": [], "additions": []}
 
     @staticmethod
-    def _merge_results(results: List[dict]) -> dict:
+    def _merge_results(results: List[dict], id_key: str) -> dict:
         merged: dict = {"updates": [], "additions": []}
         for r in results:
             norm = AnalysisStage._normalize_supplement(r.get("supplement_json"))
-            merged = AnalysisStage._merge_supplements(merged, norm)
+            merged = AnalysisStage._merge_supplements(merged, norm, id_key)
         return {"supplement_json": merged}
 
     # ── Per-chunk processor ───────────────────────────────────────────────────
@@ -233,11 +229,12 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         self,
         chunk: Chunk,
         all_objects: List[dict],
-        existing_methods: str,
+        existing_ids: str,
         record_template: str,
         total_chunks: int,
+        id_key: str,
     ) -> Optional[dict]:
-        filtered, _ = _filter_objects_for_chunk(all_objects, chunk.text)
+        filtered, _ = _filter_objects_for_chunk(all_objects, chunk.text, id_key)
 
         clean = [
             {k: v for k, v in obj.items() if k != "_object_index"}
@@ -254,7 +251,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
 
         prompt = self._build_prompt(
             chunk.text, chunk.index, total_chunks,
-            json_data, existing_methods, record_template,
+            json_data, existing_ids, record_template, id_key,
         )
 
         try:
@@ -269,26 +266,23 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         data = context["original_data"]
         all_objects: List[dict] = data if isinstance(data, list) else [data]
         chunks: List[Chunk] = context["recommendation_chunks"]
+        id_key: str = context.get("_id_field", "method")
 
         # Вычисляем обязательные поля и шаблон из оригинального документа
         required_fields = _compute_required_fields(all_objects)
         template_record = _best_template_record(all_objects, required_fields)
 
-        # Сохраняем в context для CorrectionStage
         context["_required_fields"] = required_fields
         context["_record_template"] = template_record
 
-        # Шаблон для промпта — полный JSON-объект
         record_template = json.dumps(template_record, ensure_ascii=False, indent=2)
 
-        # Список всех существующих method для промпта
-        existing_methods = "\n".join(
-            f"  - {r.get(self.RECORD_ID_KEY, '')}"
+        existing_ids = "\n".join(
+            f"  - {r.get(id_key, '')}"
             for r in all_objects
-            if isinstance(r, dict) and r.get(self.RECORD_ID_KEY)
+            if isinstance(r, dict) and r.get(id_key)
         )
 
-        # Параллельная обработка чанков
         workers = min(self.CHUNK_WORKERS, len(chunks))
         chunk_results: List[Optional[dict]] = [None] * len(chunks)
 
@@ -296,7 +290,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
             futures = {
                 executor.submit(
                     self._process_chunk,
-                    chunk, all_objects, existing_methods, record_template, len(chunks),
+                    chunk, all_objects, existing_ids, record_template, len(chunks), id_key,
                 ): chunk
                 for chunk in chunks
             }
@@ -308,15 +302,15 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         if not valid_results:
             raise Exception(f"{self.stage_name}: все чанки завершились с ошибкой")
 
-        merged = self._merge_results(valid_results)
+        merged = self._merge_results(valid_results, id_key)
         supplement = merged.get("supplement_json", {"updates": [], "additions": []})
         context["analysis"] = {"supplement_json": supplement}
 
         logger.info(
-            "Analysis: supplement(updates=%d, additions=%d)  chunks=%d/%d  required_fields=%d",
+            "Analysis: supplement(updates=%d, additions=%d)  chunks=%d/%d  required_fields=%d  id_key=%s",
             len(supplement.get("updates", [])),
             len(supplement.get("additions", [])),
             len(valid_results), len(chunks),
-            len(required_fields),
+            len(required_fields), id_key,
         )
         return context

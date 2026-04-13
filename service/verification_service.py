@@ -6,7 +6,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, List
 
 import json
 import os
@@ -123,25 +123,70 @@ class VerificationService:
         return self._default_adapter
     @staticmethod
     def _detect_id_field(records: List[dict]) -> str:
+        import math
+
         if not records:
             return "id"
 
-        field_scores = {}
+        ID_NAME_HINTS = {
+            "id", "name", "code", "title", "key", "slug", "method",
+            "identifier", "label", "ref", "uid", "uuid",
+        }
 
-        for key in records[0].keys():
-            values = [r.get(key) for r in records if isinstance(r, dict)]
-            non_null = [v for v in values if v not in (None, "", [])]
+        def _length_score(avg_len: float) -> float:
+            """1.0 при avg_len ≈ 40, штраф за очень короткие и очень длинные."""
+            if avg_len <= 0:
+                return 0.0
+            if avg_len < 5:          # однобуквенные enum-значения
+                return avg_len / 5 * 0.3
+            if avg_len > 100:        # длинные абзацы текста
+                return max(0.0, 1.0 - (avg_len - 100) / 150)
+            return 1.0 - abs(math.log(avg_len / 40)) / 4
+
+        all_records = [r for r in records if isinstance(r, dict)]
+        if not all_records:
+            return "id"
+
+        total = len(all_records)
+        # Собираем все ключи по всем записям (не только из первой)
+        all_keys: set = set(k for r in all_records for k in r)
+
+        field_scores: dict = {}
+
+        for key in all_keys:
+            values   = [r.get(key) for r in all_records]
+            non_null = [v for v in values if v not in (None, "", [], {})]
 
             if not non_null:
                 continue
 
-            uniqueness = len(set(non_null)) / len(non_null)
-            fill_rate = len(non_null) / len(records)
+            # Пропускаем поля со значениями-коллекциями (list/dict)
+            scalar = [v for v in non_null if not isinstance(v, (list, dict))]
+            if not scalar:
+                continue
 
-            score = uniqueness * 0.7 + fill_rate * 0.3
+            fill_rate  = len(non_null) / total
+            uniqueness = len({str(v) for v in scalar}) / len(scalar)
+            avg_len    = sum(len(str(v)) for v in scalar) / len(scalar)
+            name_bonus = 1.0 if key.lower() in ID_NAME_HINTS else 0.0
+
+            score = (
+                uniqueness  * 0.60 +
+                fill_rate   * 0.15 +
+                _length_score(avg_len) * 0.15 +
+                name_bonus  * 0.10
+            )
             field_scores[key] = score
 
-        return max(field_scores, key=field_scores.get, default=list(records[0].keys())[0])
+        if not field_scores:
+            return list(all_records[0].keys())[0]
+
+        best = max(field_scores, key=field_scores.get)
+        logger.debug(
+            "VerificationService: id_field='%s' (score=%.3f)",
+            best, field_scores[best],
+        )
+        return best
 
     def _run_pipeline(
         self, task_id: str, req: VerificationRequest, adapter: LLMAdapter
