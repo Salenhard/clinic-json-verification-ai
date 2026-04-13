@@ -138,16 +138,16 @@ class VerificationService:
             uniqueness = len(set(non_null)) / len(non_null)
             fill_rate = len(non_null) / len(records)
 
-            # баланс уникальности и заполненности
             score = uniqueness * 0.7 + fill_rate * 0.3
             field_scores[key] = score
 
-        return max(field_scores, key=field_scores.get, default="id")    
+        return max(field_scores, key=field_scores.get, default=list(records[0].keys())[0])
 
     def _run_pipeline(
         self, task_id: str, req: VerificationRequest, adapter: LLMAdapter
     ) -> None:
         self._update(task_id, TaskStatus.PROCESSING, 5, "Запуск пайплайна")
+        data = req.input_data if isinstance(req.input_data, list) else [req.input_data]
 
         context: dict = {
             "input_data": req.input_data,
@@ -159,7 +159,7 @@ class VerificationService:
             "max_iterations": req.max_iterations,
             "target_score": req.target_score,
             "requests_per_minute": req.requests_per_minute,
-            "_id_field": self._detect_id_field(req.input_data),
+            "_id_field": self._detect_id_field(data),,
         }
 
         stages = self._build_stages(adapter, context)
