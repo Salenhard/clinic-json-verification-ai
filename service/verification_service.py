@@ -159,7 +159,7 @@ class VerificationService:
             "max_iterations": req.max_iterations,
             "target_score": req.target_score,
             "requests_per_minute": req.requests_per_minute,
-            "_id_field": self._detect_id_field(data),,
+            "_id_field": self._detect_id_field(data),
         }
 
         stages = self._build_stages(adapter, context)
