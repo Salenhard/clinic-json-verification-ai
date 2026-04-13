@@ -87,8 +87,6 @@ class AnalysisStage(BasePipelineStage):
     MAX_OUTPUT_TOKENS = 32768
     CHUNK_WORKERS = 3
 
-    RECORD_ID_KEY = "method"
-
     # Шаблон промпта. Плейсхолдеры:
     #   {id_key}, {json_data}, {chunk_index}, {total_chunks},
     #   {chunk_text}, {existing_methods}, {record_template}
@@ -134,7 +132,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
        "changes": {{"поле": "новое значение согласно рекомендациям"}}}}
     ],
     "additions": [
-      {{"{id_key}": "Название новой рекомендации", "method_type": "...", "...": "..."}}
+      {{"{id_key}": "Название новой рекомендации", ...}}
     ]
   }}
 }}"""
@@ -151,7 +149,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
         record_template: str,
     ) -> str:
         return self.PROMPT_TEMPLATE.format(
-            id_key=self.RECORD_ID_KEY,
+            id_key=context.get("_id_field"),
             json_data=json_data,
             chunk_index=chunk_index + 1,
             total_chunks=total_chunks,
@@ -178,6 +176,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
                 result[k] = v
         return result
 
+
     @staticmethod
     def _merge_supplements(a: dict, b: dict) -> dict:
         merged_updates: List[dict] = list(a.get("updates") or [])
@@ -199,7 +198,7 @@ JSON-ДОКУМЕНТ (записи релевантные данному фра
                 existing_matches[key] = len(merged_updates)
                 merged_updates.append(u)
 
-        id_key = AnalysisStage.RECORD_ID_KEY
+        id_key = context.get("_id_field")
         existing_ids = {r.get(id_key) for r in merged_additions}
         for rec in (b.get("additions") or []):
             if rec.get(id_key) not in existing_ids:

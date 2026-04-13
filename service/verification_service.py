@@ -122,6 +122,28 @@ class VerificationService:
 
         return self._default_adapter
 
+    def _detect_id_field(records: List[dict]) -> str:
+        if not records:
+            return "id"
+
+        field_scores = {}
+
+        for key in records[0].keys():
+            values = [r.get(key) for r in records if isinstance(r, dict)]
+            non_null = [v for v in values if v not in (None, "", [])]
+
+            if not non_null:
+                continue
+
+            uniqueness = len(set(non_null)) / len(non_null)
+            fill_rate = len(non_null) / len(records)
+
+            # баланс уникальности и заполненности
+            score = uniqueness * 0.7 + fill_rate * 0.3
+            field_scores[key] = score
+
+        return max(field_scores, key=field_scores.get, default="id")    
+
     def _run_pipeline(
         self, task_id: str, req: VerificationRequest, adapter: LLMAdapter
     ) -> None:
@@ -136,7 +158,8 @@ class VerificationService:
             "overlap": req.overlap,
             "max_iterations": req.max_iterations,
             "target_score": req.target_score,
-            "requests_per_minute": req.requests_per_minute
+            "requests_per_minute": req.requests_per_minute,
+            "_id_field": self._detect_id_field(req.input_data),
         }
 
         stages = self._build_stages(adapter, context)

@@ -27,17 +27,9 @@ from .base import BasePipelineStage
 logger = logging.getLogger(__name__)
 
 _EMPTY_VALUES = (None, "", [], {})
-_FRACTURE_CLASS_FIELDS = {"fracture_class", "target.fracture_class"}
-
 
 def _is_empty(v: Any) -> bool:
     return v is None or v in _EMPTY_VALUES
-
-
-def _is_dislocation_only(record: dict) -> bool:
-    """True если запись относится к вывиху без перелома."""
-    diag = (record.get("diagnosis") or "").lower()
-    return "вывих" in diag and "перелом" not in diag
 
 
 def _merge_lists(old: list, new: list) -> Tuple[list, list]:
@@ -53,7 +45,6 @@ def _merge_lists(old: list, new: list) -> Tuple[list, list]:
 
 class CorrectionStage(BasePipelineStage):
     stage_name = "stage4_correction"
-    ID_KEY = "method"
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -67,6 +58,7 @@ class CorrectionStage(BasePipelineStage):
     def _apply_changes(
         self,
         record: dict,
+        id_key: str,
         changes: dict,
         record_id: str,
         locked: Set[Tuple[str, str]],
@@ -93,13 +85,10 @@ class CorrectionStage(BasePipelineStage):
         for key, new_val in changes.items():
             full_path = f"{path}.{key}" if path else key
 
-            # Guard: fracture_class не применяем к чистым вывихам
-            if full_path in _FRACTURE_CLASS_FIELDS and _is_dislocation_only(record):
-                logger.debug("CorrectionStage: пропускаем %s для вывиха '%s'", full_path, record_id)
-                continue
-
             old_val = result.get(key)
-
+            if key == id_key and not path:
+                logger.warning("попытка переименовать '%s' → '%s' — пропускаем", ...)
+                continue
             if key not in result:
                 # Нового поля нет — добавляем (скаляр, блокируем)
                 result[key] = new_val
@@ -151,7 +140,7 @@ class CorrectionStage(BasePipelineStage):
         analysis  = context["analysis"]
         supplement = analysis.get("supplement_json") or {}
         iteration  = context.get("_iteration", 1)
-
+        id_key = context.get("_id_field")
         updates   = supplement.get("updates")   or []
         additions = supplement.get("additions") or []
 
@@ -186,7 +175,7 @@ class CorrectionStage(BasePipelineStage):
                     logger.warning("CorrectionStage: match=%s не найдена — пропускаем", match)
                     continue
 
-                record_id = corrected[idx].get(self.ID_KEY, f"[{idx}]")
+                record_id = corrected[idx].get(id_key, f"[{idx}]")
                 merged, sub_log, newly_locked = self._apply_changes(
                     corrected[idx], changes, record_id, locked
                 )
@@ -204,9 +193,9 @@ class CorrectionStage(BasePipelineStage):
 
             # 2. additions — только если метода ещё нет и запись валидна
             required_fields = context.get("_required_fields") or []
-            existing_ids = {r.get(self.ID_KEY) for r in corrected}
+            existing_ids = {r.get(id_key) for r in corrected}
             for new_rec in additions:
-                rec_id = new_rec.get(self.ID_KEY)
+                rec_id = new_rec.get(id_key)
                 if rec_id and rec_id in existing_ids:
                     logger.debug("CorrectionStage: '%s' уже есть — пропускаем", rec_id)
                     continue
@@ -238,7 +227,7 @@ class CorrectionStage(BasePipelineStage):
         # ── Объект (dict) ─────────────────────────────────────────────────────
         elif isinstance(original, dict):
             all_changes = {k: v for upd in updates for k, v in (upd.get("changes") or {}).items()}
-            record_id = original.get(self.ID_KEY, "root")
+            record_id = original.get(id_key, "root")
             corrected, iter_log, newly_locked = self._apply_changes(
                 deepcopy(original), all_changes, record_id, locked
             )
