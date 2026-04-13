@@ -121,7 +121,7 @@ class VerificationService:
             )
 
         return self._default_adapter
-
+    @staticmethod
     def _detect_id_field(records: List[dict]) -> str:
         if not records:
             return "id"
