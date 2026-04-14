@@ -28,16 +28,9 @@ from .base import BasePipelineStage
 logger = logging.getLogger(__name__)
 
 _EMPTY_VALUES = (None, "", [], {})
-_FRACTURE_CLASS_FIELDS = {"fracture_class", "target.fracture_class"}
-
 
 def _is_empty(v: Any) -> bool:
     return v is None or v in _EMPTY_VALUES
-
-
-def _is_dislocation_only(record: dict) -> bool:
-    diag = (record.get("diagnosis") or "").lower()
-    return "вывих" in diag and "перелом" not in diag
 
 
 def _merge_lists(old: list, new: list) -> Tuple[list, list]:
@@ -93,13 +86,6 @@ class CorrectionStage(BasePipelineStage):
                 logger.warning(
                     "CorrectionStage: поле '%s' использовано в match записи '%s' — пропускаем",
                     key, record_id,
-                )
-                continue
-
-            # Guard 2: fracture_class не применяем к чистым вывихам
-            if full_path in _FRACTURE_CLASS_FIELDS and _is_dislocation_only(record):
-                logger.debug(
-                    "CorrectionStage: пропускаем %s для вывиха '%s'", full_path, record_id,
                 )
                 continue
 

@@ -25,7 +25,7 @@ class RateLimiter:
             if wait > 0:
                 logger.info(
                     f"⏳ Rate limit: waiting {wait:.1f}s "
-                    f"(free tier — {self.rpm} req/min)"
+                    f"({self.rpm} req/min)"
                 )
                 time.sleep(wait)
 

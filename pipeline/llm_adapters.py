@@ -49,7 +49,7 @@ class OpenAICompatibleAdapter(LLMAdapter):
     """
     Работает с любым провайдером, у которого есть OpenAI-совместимый API.
     Grok:     base_url="https://api.x.ai/v1",     model="grok-3"
-    DeepSeek: base_url="https://api.deepseek.com", model="deepseek-chat"
+    DeepSeek: base_url="https://api.deepseek.com/v1", model="deepseek-chat"
     GPT:      base_url=None (дефолт openai),       model="gpt-4o"
     """
     def __init__(self, model: str, api_key: str,
@@ -130,7 +130,7 @@ class LLMAdapterFactory:
         "grok": lambda **kw: OpenAICompatibleAdapter(
             base_url="https://api.x.ai/v1", **kw),
         "deepseek": lambda **kw: OpenAICompatibleAdapter(
-            base_url="https://api.deepseek.com", **kw),
+            base_url="https://api.deepseek.com/v1", **kw),
     }
 
     @classmethod
